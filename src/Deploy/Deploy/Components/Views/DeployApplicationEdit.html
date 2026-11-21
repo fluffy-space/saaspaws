@@ -1,0 +1,132 @@
+<AdminLayout title="Edit application">
+    <EditHeader title="{$createMode ? 'Add application' : 'Edit application'}"
+        backUrl="/admin/deploy-application" createMode="$createMode" state="$state" (click)="onSave" />
+
+    <div if="{!$createMode}" class="text-muted small mb-2">{$liveSummary}</div>
+
+    <div class="card shadow-sm p-2">
+        <div if="$item && $validation">
+            <ActionForm #actionForm (submit)="onSave" id="page-form" action="/admin/deploy-application" method="post"
+                rules="{$validation->getValidationRules()}">
+                <Tabs>
+                    <Tab title="Details" active>
+                        <div class="row">
+                            <div class="col-12 col-lg-6">
+                                <TextInput type="text" wrapperClass="col-12" label="Name" placeholder="myapp"
+                                    inputClass="form-control" id="Name" model="$item->Name" />
+                                <TextInput type="text" wrapperClass="col-12" label="Root folder"
+                                    placeholder="/workspace/myapp"
+                                    hint="Under blue/green the slots are child directories of this (blue/, green/), and the vault and the live-slot marker sit beside them."
+                                    inputClass="form-control" id="RootFolder" model="$item->RootFolder" />
+                                <TextInput type="text" wrapperClass="col-12" label="Subfolder (optional)"
+                                    hint="When the application lives one level deeper than the root."
+                                    inputClass="form-control" id="Subfolder" model="$item->Subfolder" />
+                                <TextInput type="text" wrapperClass="col-12" label="Domain" placeholder="example.com"
+                                    hint="Checked through the edge after a rotation. Blank skips that check."
+                                    inputClass="form-control" id="Domain" model="$item->Domain" />
+                                <TextInput textarea="true" rows="2" wrapperClass="col-12" label="Description"
+                                    inputClass="form-control" id="Description" model="$item->Description" />
+                            </div>
+                            <div class="col-12 col-lg-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Source</label>
+                                    <select class="form-select" model="$item->SourceId">
+                                        <option value="">— none —</option>
+                                        <option foreach="$sources as $source" value="{$source['Id']}">
+                                            {$source['Name']}</option>
+                                    </select>
+                                    <div class="form-text">The repository a deploy clones from.</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Strategy</label>
+                                    <select class="form-select" model="$item->Strategy">
+                                        <option value="rotate">Blue/green rotation</option>
+                                        <option value="restart">Replace and restart</option>
+                                    </select>
+                                    <div class="form-text">Rotation builds into the idle slot and moves the
+                                        upstreams once it is healthy. Restart replaces the release in place, with
+                                        the downtime that implies.</div>
+                                </div>
+                                <TextInput type="text" wrapperClass="col-12" label="Environment" placeholder="prod"
+                                    hint="Vault file suffix, and the build key when no build commands are set."
+                                    inputClass="form-control" id="Environment" model="$item->Environment" />
+                                <TextInput type="text" wrapperClass="col-12" label="Build key" placeholder="prod"
+                                    hint="Passed to `php fluffy build <key>`."
+                                    inputClass="form-control" id="BuildParams" model="$item->BuildParams" />
+                                <TextInput type="text" wrapperClass="col-12" label="Health path" placeholder="/health"
+                                    hint="Polled on the loopback until it answers 200 steadily, before any traffic moves."
+                                    inputClass="form-control" id="HealthPath" model="$item->HealthPath" />
+                                <div class="col-12">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="VerifyBeforeRotate"
+                                            model="$item->VerifyBeforeRotate" />
+                                        <label class="form-check-label" for="VerifyBeforeRotate">Verify before rotating</label>
+                                    </div>
+                                    <div class="form-text">
+                                        Runs the release's own ProdSafe server suites against the new slot on the
+                                        loopback. A failure aborts the deploy without moving traffic, so the slot that
+                                        is already live keeps serving. Needs scripts/verify in the release.
+                                    </div>
+                                </div>
+                                <TextInput type="number" wrapperClass="col-12" label="Drain (seconds)"
+                                    placeholder="30"
+                                    hint="How long the old slot keeps serving in-flight requests before it is stopped."
+                                    inputClass="form-control" id="DrainSeconds" model="$item->DrainSeconds" />
+                            </div>
+                        </div>
+                    </Tab>
+
+                    <Tab title="Servers">
+                        <div class="mb-2 text-muted small">A deploy runs against every server ticked here, one
+                            after another.</div>
+                        <div if="{count($servers) === 0}" class="text-muted small">No servers yet. Add one under
+                            Deploy servers first.</div>
+                        <div foreach="$servers as $server" class="form-check">
+                            <input class="form-check-input" type="checkbox" checked="{hasServer($server['Id'])}"
+                                (change)="toggleServer($server['Id'])" />
+                            <label class="form-check-label">
+                                {$server['Name']} <span class="text-muted small">{$server['Host']}</span>
+                            </label>
+                        </div>
+                    </Tab>
+
+                    <Tab title="Services">
+                        <div class="row mb-3">
+                            <TextInput type="text" wrapperClass="col-12 col-lg-6" label="Service prefix"
+                                placeholder="myapp" hint="Used to generate the unit names below."
+                                inputClass="form-control" id="ServicePrefix" model="$item->ServicePrefix" />
+                            <TextInput type="number" wrapperClass="col-12 col-lg-6" label="Base port"
+                                placeholder="8221" hint="The first slot's port; the second takes the next one."
+                                inputClass="form-control" id="BasePort" model="$item->BasePort" />
+                        </div>
+                        <DeployRowsEditor item="$item" />
+                    </Tab>
+
+                    <Tab title="Key vault">
+                        <div class="alert alert-secondary show py-2 small">
+                            <span if="$item->HasKeyVault">The stored vault is shown below so it can be edited key
+                                by key. Saving keeps it; clearing the box keeps it too. Editing here changes
+                                nothing on the servers until Push key vault.</span>
+                            <span if="!$item->HasKeyVault">No vault stored. Paste values.&lt;env&gt;.json to be able
+                                to push it to the servers.</span>
+                        </div>
+                        <TextInput type="text" wrapperClass="col-12" label="Vault file name"
+                            placeholder="values.prod.json"
+                            hint="Blank derives values.&lt;environment&gt;.json, the file the build reads."
+                            inputClass="form-control" id="KeyVaultFile" model="$item->KeyVaultFile" />
+                        <TextInput textarea="true" rows="12" wrapperClass="col-12" label="Key vault (JSON)"
+                            hint="Saved here; written to the boxes only by Push key vault on the Deployments tab, never by a deploy, so shipping code cannot quietly rewrite production secrets."
+                            inputClass="form-control" id="KeyVault" model="$item->KeyVault" />
+                    </Tab>
+
+                    <Tab if="{!$createMode}" title="Deployments">
+                        <DeployRunPanel application="$id" name="{$item->Name}" />
+                    </Tab>
+                </Tabs>
+
+                <ValidationMessage #generalMessages fallback="true" wrapperClass="mb-3" />
+                <ActionButton text="{$createMode ? 'Create' : 'Save'}" state="$state" />
+            </ActionForm>
+        </div>
+    </div>
+</AdminLayout>

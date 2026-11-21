@@ -1,0 +1,108 @@
+<AdminLayout title="Backups">
+
+   <div if="$status" class="alert show { freshnessClass() } py-2">
+      <span if="hasEverSucceeded()">
+         <Icon name="bi-clock-history" />
+         Last successful backup <span class="fw-semibold">{ freshnessText() }</span>
+         <span class="ms-1 small">({ lastArtifact() })</span>
+      </span>
+      <span if="!hasEverSucceeded()">
+         <Icon name="bi-exclamation-triangle" />
+         No successful backup has ever completed. Until one has, this is not a backup system.
+      </span>
+   </div>
+
+   <div if="lastRunFailed()" class="alert show alert-danger py-2">
+      <Icon name="bi-x-octagon" />
+      The last backup attempt <span class="fw-semibold">failed</span> { lastRunText() }:
+      <span class="small">{ lastRunError() }</span>
+   </div>
+
+   <div if="$status" class="alert show { verifyClass() } py-2">
+      <Icon name="bi-patch-check" />
+      Last verified restore <span class="fw-semibold">{ verifyText() }</span>.
+      <span if="!hasEverVerified()">
+         Backups that have never been restored are a folder of files nobody has read.
+      </span>
+   </div>
+
+   <div if="$busy" class="alert show alert-info py-2">
+      <Icon name="bi-hourglass-split" />
+      Working. This waits for the real outcome rather than reporting "started".
+   </div>
+
+   <Alert if="{$error !== ''}" variant="error" body="$error" dismissible="{false}" />
+   <Alert if="{$resultText !== ''}" variant="success" body="$resultText" dismissible="{false}" />
+
+   <!-- Actions live above the table, not in the DataTable `actions` slot: that slot shares a row
+        with the search box, and several buttons wrapped onto a second line inside it. A full-width
+        row keeps them on one line and leaves room to say what each one does. -->
+   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+      <button type="button" class="btn btn-primary" disabled="$busy" (click)="runNow">
+         <i class="bi bi-play-fill"></i> Back up database
+      </button>
+      <button type="button" class="btn btn-outline-primary" disabled="$busy" (click)="verifyNow">
+         <i class="bi bi-patch-check"></i> Verify latest
+      </button>
+      <button type="button" class="btn btn-outline-secondary" disabled="$busy" (click)="runFiles">
+         <i class="bi bi-paperclip"></i> Back up files
+      </button>
+      <div class="ms-auto d-flex flex-wrap gap-2">
+         <button type="button" class="btn btn-outline-secondary" disabled="$busy" (click)="toggleRemote">
+            <i class="bi bi-hdd-network"></i> On the Storage Box
+         </button>
+         <a href="/admin/settings" class="btn btn-outline-secondary">
+            <i class="bi bi-gear"></i> Settings
+         </a>
+      </div>
+   </div>
+
+   <div if="$remoteOpen && $remote" class="card mb-3">
+      <div class="card-body py-2">
+         <div class="small text-muted mb-2">
+            Artifacts at <code>{ remoteBaseLabel() }</code>, meaning what is actually restorable, which
+            is not the same question as what this instance has run.
+         </div>
+         <div class="row">
+            <div class="col-md-6">
+               <div class="fw-semibold small">PostgreSQL</div>
+               <div foreach="$remote['pg'] as $name" class="small text-muted text-break">{$name}</div>
+               <div if="count($remote['pg']) === 0" class="small text-danger">none</div>
+            </div>
+            <div class="col-md-6">
+               <div class="fw-semibold small">Files</div>
+               <div foreach="$remote['files'] as $name" class="small text-muted text-break">{$name}</div>
+               <div if="count($remote['files']) === 0" class="small text-muted">none</div>
+            </div>
+         </div>
+      </div>
+   </div>
+
+   <ListPage title="Backups" columns="$columns" urlSegment="backup" name="Backup"
+      add="false" edit="false" remove="false" query="$listQuery">
+      <DataTable emptyIcon="bi-database-down" emptyTitle="No backups yet"
+         emptyText="Configure the destination under Settings → backup, then press Back up database to prove it works.">
+         <slotContent name="column_Status" data="$item">
+            <td>
+               <span class="badge { badgeClass($item) }">{ badgeText($item) }</span>
+               <span class="badge text-bg-light text-muted ms-1">{ kindLabel($item) }</span>
+               <span if="$item->Encrypted" class="ms-1 text-muted" title="Encrypted to the age recipient">
+                  <i class="bi bi-lock-fill"></i>
+               </span>
+            </td>
+         </slotContent>
+         <slotContent name="column_CreatedOn" data="$item">
+            <td class="text-nowrap">{ fmtTime($item->CreatedOn) }</td>
+         </slotContent>
+         <slotContent name="column_Artifact" data="$item">
+            <td class="py-2">
+               <div class="fw-semibold text-break">{$item->Artifact}</div>
+               <div class="small text-muted">{ summaryLine($item) }</div>
+               <div class="small text-muted fst-italic text-break">{$item->Trigger}</div>
+               <div if="$item->Error" class="small text-danger text-break">{$item->Error}</div>
+            </td>
+         </slotContent>
+      </DataTable>
+   </ListPage>
+
+</AdminLayout>

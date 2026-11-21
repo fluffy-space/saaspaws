@@ -1,0 +1,113 @@
+<div if="$item">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+            <label class="form-label fw-semibold mb-0">Upstreams</label>
+            <div class="text-muted small">One nginx block per location. A rotation repoints each one at the
+                port of the unit that answers it in the new slot.</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" (click)="addUpstream()">
+            <Icon name="bi-plus-lg" /> Add upstream
+        </button>
+    </div>
+
+    <div class="table-responsive mb-4">
+        <table class="table table-sm align-middle mb-0">
+            <thead>
+                <tr>
+                    <th style="min-width:11rem">Name</th>
+                    <th style="min-width:7rem">Location</th>
+                    <th>Conf path</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr foreach="$item->Upstreams as $ui => $upstream">
+                    <td><input type="text" class="form-control form-control-sm" placeholder="myapp_app"
+                            model="$upstream->Name" /></td>
+                    <td><input type="text" class="form-control form-control-sm" placeholder="/"
+                            model="$upstream->Location" /></td>
+                    <td><input type="text" class="form-control form-control-sm"
+                            placeholder="{$upstream->ConfPathResolved ? $upstream->ConfPathResolved : 'derived from the name'}"
+                            model="$upstream->ConfPath" /></td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-danger" (click)="removeUpstream($ui)">
+                            <Icon name="bi-trash" />
+                        </button>
+                    </td>
+                </tr>
+                <tr if="{count($item->Upstreams) === 0}">
+                    <td colspan="4" class="text-muted small">No upstreams. An application that rotates needs at
+                        least one.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+            <label class="form-label fw-semibold mb-0">Services</label>
+            <div class="text-muted small">systemd units. A unit with a slot rotates; one without (a worker) is
+                simply restarted.</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" (click)="addService()">
+            <Icon name="bi-plus-lg" /> Add service
+        </button>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+            <thead>
+                <tr>
+                    <th style="min-width:12rem">Unit</th>
+                    <th style="min-width:7rem">Slot</th>
+                    <th style="min-width:7rem">Port</th>
+                    <th style="min-width:10rem">Upstream</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr foreach="$item->Services as $si => $service">
+                    <td><input type="text" class="form-control form-control-sm" placeholder="myapp-blue"
+                            model="$service->Name" /></td>
+                    <td>
+                        <select class="form-select form-select-sm" model="$service->Slot">
+                            <option foreach="$slots as $slot" value="{$slot}">{$slot ? $slot : '— none —'}</option>
+                        </select>
+                    </td>
+                    <td><input type="number" class="form-control form-control-sm" placeholder="8221"
+                            model="$service->Port" /></td>
+                    <td>
+                        <select class="form-select form-select-sm" model="$service->UpstreamName">
+                            <option value="">— none —</option>
+                            <option foreach="$item->Upstreams as $option" value="{$option->Name}">{$option->Name}
+                            </option>
+                        </select>
+                    </td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-danger" (click)="removeService($si)">
+                            <Icon name="bi-trash" />
+                        </button>
+                    </td>
+                </tr>
+                <tr if="{count($item->Services) === 0}">
+                    <td colspan="5" class="text-muted small">No services. Nothing would be restarted by a deploy.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div if="{canGenerate()}" class="border rounded p-3 mt-3 bg-body-tertiary">
+        <div class="fw-semibold mb-1">Generate the blue/green pair</div>
+        <div class="text-muted small mb-2">
+            Prefix <code>myapp</code> and base port <code>8221</code> produce units
+            <code>myapp-blue</code>:8221 and <code>myapp-green</code>:8222 behind upstream
+            <code>myapp_app</code> at <code>/</code>, which is what <code>configs/server.php</code> already declares.
+            The rows land in the tables above and stay editable; nothing is written until you save.
+        </div>
+        <Alert if="{$error !== ''}" variant="danger" body="$error" dismissible="{false}" />
+        <button type="button" class="btn btn-sm btn-outline-secondary" disabled="{$generating}" (click)="generate()">
+            <Icon name="bi-magic" /> Generate from prefix + base port
+        </button>
+    </div>
+</div>

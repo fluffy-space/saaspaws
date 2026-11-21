@@ -1,0 +1,25 @@
+<AdminLayout title="Applications">
+    <ListPage title="Applications" columns="$columns" urlSegment="deploy-application" name="Application"
+        deleteMessage="{deleteMessage()}">
+        <DataTable emptyTitle="Nothing to deploy yet"
+            emptyText="An application is a root folder on one or more servers, its systemd units and its nginx upstreams.">
+            <slotContent name="column_Name" data="$item">
+                <td class="fw-semibold">{$item->Name}</td>
+            </slotContent>
+            <slotContent name="column_Strategy" data="$item">
+                <td>
+                    <span if="{$item->Strategy === 'rotate'}" class="badge text-bg-info">blue/green</span>
+                    <span if="{$item->Strategy !== 'rotate'}" class="badge text-bg-secondary">restart</span>
+                </td>
+            </slotContent>
+            <slotContent name="column_LiveSlot" data="$item">
+                <td>
+                    <span class="{slotClass($item->LiveSlot)}">{$item->LiveSlot ? $item->LiveSlot : 'unknown'}</span>
+                </td>
+            </slotContent>
+            <slotContent name="column_LastDeployedOn" data="$item">
+                <td class="small text-muted">{formatTime($item->LastDeployedOn)}</td>
+            </slotContent>
+        </DataTable>
+    </ListPage>
+</AdminLayout>

@@ -1,0 +1,18 @@
+<AdminLayout title="Deploy servers">
+    <ListPage title="Deploy servers" columns="$columns" urlSegment="deploy-server" name="Server"
+        deleteMessage="{deleteMessage()}">
+        <DataTable emptyTitle="No servers yet"
+            emptyText="Add the box you deploy to: its host, the SSH user, and the key this machine signs with.">
+            <slotContent name="column_Name" data="$item">
+                <td class="fw-semibold">{$item->Name}</td>
+            </slotContent>
+            <slotContent name="column_HasKey" data="$item">
+                <td>
+                    <span if="$item->HasKey" class="badge text-bg-success">stored</span>
+                    <span if="!$item->HasKey" class="badge text-bg-warning">missing</span>
+                    <span if="$item->HasPassword" class="badge text-bg-light text-muted ms-1">sudo password</span>
+                </td>
+            </slotContent>
+        </DataTable>
+    </ListPage>
+</AdminLayout>

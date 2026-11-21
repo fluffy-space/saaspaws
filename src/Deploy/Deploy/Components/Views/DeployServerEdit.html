@@ -1,0 +1,52 @@
+<AdminLayout title="Edit server">
+    <EditHeader title="{$createMode ? 'Add server' : 'Edit server'}" backUrl="/admin/deploy-server"
+        createMode="$createMode" state="$state" (click)="onSave" />
+    <div class="card shadow-sm p-2">
+        <div if="$item && $validation" class="p-2">
+            <ActionForm #actionForm (submit)="onSave" id="page-form" action="/admin/deploy-server" method="post"
+                rules="{$validation->getValidationRules()}">
+                <div class="row">
+                    <div class="col-12 col-lg-6">
+                        <TextInput type="text" wrapperClass="col-12" label="Name" placeholder="myapp-prod"
+                            inputClass="form-control" id="Name" model="$item->Name" />
+                        <TextInput type="text" wrapperClass="col-12" label="Host" placeholder="203.0.113.10"
+                            hint="Hostname or IP reachable over SSH from this machine."
+                            inputClass="form-control" id="Host" model="$item->Host" />
+                        <TextInput type="number" wrapperClass="col-12" label="Port" placeholder="22"
+                            inputClass="form-control" id="Port" model="$item->Port" />
+                        <TextInput type="text" wrapperClass="col-12" label="SSH user" placeholder="root"
+                            hint="root runs everything as-is; any other user needs either its own password below or a NOPASSWD sudoers entry."
+                            inputClass="form-control" id="UserName" model="$item->UserName" />
+                        <TextInput textarea="true" rows="2" wrapperClass="col-12" label="Description"
+                            inputClass="form-control" id="Description" model="$item->Description" />
+                    </div>
+                    <div class="col-12 col-lg-6">
+                        <div class="alert alert-secondary show py-2 small">
+                            <span if="$item->HasKey">A key pair is stored. It is never shown again, so leave these
+                                blank to keep it, or paste a new one to replace it.</span>
+                            <span if="!$item->HasKey">No key stored yet. Paste the pair this machine should use.</span>
+                        </div>
+                        <TextInput textarea="true" rows="6" wrapperClass="col-12" label="Private key"
+                            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" inputClass="form-control"
+                            id="PrivateFileKey" model="$item->PrivateFileKey" />
+                        <TextInput textarea="true" rows="3" wrapperClass="col-12" label="Public key"
+                            placeholder="ssh-rsa AAAA..." inputClass="form-control"
+                            id="PublicFileKey" model="$item->PublicFileKey" />
+                        <TextInput type="password" wrapperClass="col-12" label="Key passphrase"
+                            hint="Supported: a protected key authenticates fine here. Leave blank for an unprotected one."
+                            inputClass="form-control" id="FileKeyPassphrase" model="$item->FileKeyPassphrase" />
+                        <TextInput type="password" wrapperClass="col-12" label="Password"
+                            hint="The login user's own password, used for sudo: systemctl, the upstream rewrite, the edge reload. Not needed for root or a NOPASSWD entry. Fed to sudo on stdin, never on a command line."
+                            inputClass="form-control" id="Password" model="$item->Password" />
+                        <div class="small text-muted mb-2">
+                            <span if="$item->HasPassword">A password is stored. Leave blank to keep it.</span>
+                            <span if="{!$item->HasPassword && $item->UserName !== 'root'}">No password stored:
+                                privileged steps will fail fast rather than hang if the box asks for one.</span>
+                        </div>
+                    </div>
+                </div>
+                <ValidationMessage #generalMessages />
+            </ActionForm>
+        </div>
+    </div>
+</AdminLayout>

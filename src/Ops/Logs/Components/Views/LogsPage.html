@@ -1,0 +1,69 @@
+<AdminLayout title="$title" fullWidth>
+
+   <div class="card position-relative">
+
+      <div if="$loading" class="position-absolute top-0 start-0 w-100" style="height: 3px; background-color: #0d6efd; border-top-left-radius: .375rem; border-top-right-radius: .375rem;"></div>
+
+      <div class="card-body">
+         <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+            <h5 class="card-title mb-0 me-2 d-flex align-items-center">
+               <i class="bi bi-journal-text me-2"></i>
+               Journal
+            </h5>
+
+            <div if="$multiUnit" class="btn-group btn-group-sm" role="group">
+               <button type="button" class="btn btn-outline-secondary" class.active="{ $unitFilter === '' }" (click)="setUnit('')">All</button>
+               <button type="button" foreach="$units as $u" class="btn {unitBtn($u)}" class.active="{ $unitFilter === $u['unit'] }" (click)="setUnit($u['unit'])">{ $u['label'] }</button>
+            </div>
+
+            <div class="btn-group btn-group-sm ms-auto" role="group">
+               <button type="button" class="btn btn-outline-secondary" class.active="{ $priority === '' }" (click)="setPriority('')">All</button>
+               <button type="button" class="btn btn-outline-danger" class.active="{ $priority === 'err' }" (click)="setPriority('err')">Errors</button>
+               <button type="button" class="btn btn-outline-warning" class.active="{ $priority === 'warning' }" (click)="setPriority('warning')">Warnings</button>
+               <button type="button" class="btn btn-outline-info" class.active="{ $priority === 'info' }" (click)="setPriority('info')">Info</button>
+            </div>
+
+            <div class="btn-group btn-group-sm" role="group">
+               <button type="button" class="btn btn-outline-secondary" class.active="{ $lineCount === 200 }" (click)="setLines(200)">200</button>
+               <button type="button" class="btn btn-outline-secondary" class.active="{ $lineCount === 500 }" (click)="setLines(500)">500</button>
+               <button type="button" class="btn btn-outline-secondary" class.active="{ $lineCount === 1000 }" (click)="setLines(1000)">1000</button>
+            </div>
+
+            <button type="button" class="btn btn-sm btn-primary" (click)="reload()" disabled="$loading">
+               <i class="bi bi-arrow-clockwise"></i>
+               Refresh
+            </button>
+         </div>
+
+         <div if="$log && !isAvailable()" class="alert alert-warning show d-flex align-items-center mb-0" role="alert">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <div>{ errorText() }</div>
+         </div>
+
+         <div if="isAvailable()">
+            <div if="count($lines) === 0" class="text-muted text-center py-4">
+               No journal entries for this filter.
+            </div>
+            <div if="count($lines) > 0" style="max-height: 60vh; overflow: auto; background-color: #1e1e1e; color: #d4d4d4; padding: .75rem 1rem; border-radius: .375rem; font-family: var(--bs-font-monospace, monospace); font-size: .8125rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word;">
+               <div foreach="$lines as $line"><span if="$multiUnit" class="badge {lineBadge($line)} me-2" style="vertical-align: baseline;">{ $line['label'] }</span><span>{ $line['text'] }</span></div>
+            </div>
+            <div class="d-flex align-items-center gap-2 mt-2">
+               <button type="button" class="btn btn-sm btn-outline-secondary" (click)="older()" disabled="{!$hasOlder || $loading}">
+                  <i class="bi bi-chevron-left"></i>
+                  Older
+               </button>
+               <button type="button" class="btn btn-sm btn-outline-secondary" (click)="newer()" disabled="{!$hasNewer || $loading}">
+                  Newer
+                  <i class="bi bi-chevron-right"></i>
+               </button>
+               <button type="button" class="btn btn-sm btn-outline-primary" (click)="reload()" disabled="$loading">
+                  <i class="bi bi-chevron-bar-right"></i>
+                  Latest
+               </button>
+               <span class="text-muted small ms-auto">{ count($lines) } entries · newest at the bottom</span>
+            </div>
+         </div>
+      </div>
+   </div>
+
+</AdminLayout>

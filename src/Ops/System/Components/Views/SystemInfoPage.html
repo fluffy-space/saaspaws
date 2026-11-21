@@ -1,0 +1,158 @@
+<AdminLayout title="$title">
+
+   <div class="row m-0 gy-4 align-items-stretch">
+      <div class="col-sm-12 col-md-6">
+         <IconCard icon="bi-memory" title="RAM">
+            <div>
+               Used:
+               <span class="fw-semibold text-primary">
+                  { formatBytes(
+                  $systemInfo ? $systemInfo['os']['mem_used'] : 0
+                  ) }
+               </span>
+               ({ number_format(
+               $systemInfo ? $systemInfo['os']['used_percentage'] : 0,
+               2
+               ) }%)
+            </div>
+            <div class="mt-1">
+               Free:
+               <span class="fw-semibold text-success">
+                  { formatBytes(
+                  $systemInfo ? $systemInfo['os']['mem_available'] : 0
+                  ) }
+               </span>
+               ({ number_format(
+               $systemInfo ? $systemInfo['os']['free_percentage'] : 0,
+               2)}%)
+            </div>
+            <div class="mt-1">
+               Total:
+               <span class="fw-semibold">
+                  { formatBytes($systemInfo ? $systemInfo['os']['mem_total'] : 0) }
+               </span>
+            </div>
+         </IconCard>
+      </div>
+      <div class="col-sm-12 col-md-6">
+         <IconCard icon="bi-cpu" iconClass="bg-warning" title="CPU">
+            <p class="fs-2 fw-semibold mb-1">
+               {
+               number_format(
+               $systemInfo ? $systemInfo['os']['cpu_load'] : 0,
+               2
+               )
+               }%
+            </p>
+            <!-- Steal: time the hypervisor gave to other tenants while we had work ready.
+                 Only meaningful on shared vCPU, which is what we run on, and it is the
+                 evidence for moving to a dedicated instance, so it belongs next to load
+                 rather than hidden in alerts. -->
+            <div class="small text-muted">
+               <span>Steal</span>
+               <span class="fw-semibold">
+                  { number_format($systemInfo ? $systemInfo['os']['cpu_steal'] : 0, 2) }%
+               </span>
+            </div>
+         </IconCard>
+      </div>
+      <div class="col-sm-12 col-md-6">
+         <IconCard icon="bi-database-gear" iconClass="bg-danger" title="Redis">
+
+            <div>
+               Used:
+               <span class="fw-semibold text-primary">
+                  { formatBytes(
+                  $systemInfo ? $systemInfo['redis']['used_memory'] : 0
+                  ) }
+               </span>
+               ({ number_format(
+               $systemInfo ? $systemInfo['redis']['used_percentage'] : 0,
+               2
+               ) }%)
+            </div>
+            <div class="mt-1">
+               Total:
+               <span class="fw-semibold">
+                  { formatBytes($systemInfo ? $systemInfo['redis']['total_system_memory'] : 0) }
+               </span>
+            </div>
+
+
+            <div class="mt-1">
+               Keys (db { $systemInfo ? $systemInfo['redis']['db_index'] : 0 }):
+               <span class="fw-semibold text-success">
+                  {
+                  number_format($systemInfo ? $systemInfo['redis']['keys'] : 0)
+                  }
+               </span>
+            </div>
+         </IconCard>
+      </div>
+
+
+      <div class="col-sm-12 col-md-6">
+         <IconCard icon="bi-hdd" iconClass="bg-info" title="Disk">
+            <div>
+               Used:
+               <span class="fw-semibold text-primary">
+                  {
+                  $systemInfo ? $systemInfo['os']['disk_space_used'] : 0
+                  }
+               </span>
+               ({ $systemInfo ? $systemInfo['os']['disk_space_used_precentage'] : 0 })
+            </div>
+            <div class="mt-1">
+               Free:
+               <span class="fw-semibold text-success">
+                  {
+                  $systemInfo ? $systemInfo['os']['disk_space_free'] : 0
+                  }
+               </span>
+            </div>
+            <div class="mt-1">
+               Total:
+               <span class="fw-semibold">
+                  { $systemInfo ? $systemInfo['os']['disk_space_total'] : 0}
+               </span>
+            </div>
+         </IconCard>
+      </div>
+
+      <div class="col-12">
+         <div class="card">
+            <div class="card-body">
+               <h5 class="card-title d-flex align-items-center">
+                  <i class="bi bi-list-task me-2"></i>
+                  Processes
+                  <span class="badge bg-secondary ms-2">{ count($processes) }</span>
+               </h5>
+               <div class="table-responsive">
+                  <table class="table table-sm table-hover align-middle mb-0">
+                     <thead>
+                        <tr class="user-select-none">
+                           <th style="cursor: pointer;" (click)="setSort('PID')">PID { sortIcon('PID') }</th>
+                           <th style="cursor: pointer;" (click)="setSort('CMD')">Command { sortIcon('CMD') }</th>
+                           <th class="text-end" style="cursor: pointer;" (click)="setSort('CPUPercentage')">CPU % { sortIcon('CPUPercentage') }</th>
+                           <th class="text-end" style="cursor: pointer;" (click)="setSort('RAMPercentage')">RAM % { sortIcon('RAMPercentage') }</th>
+                           <th class="text-end" style="cursor: pointer;" (click)="setSort('RAMKb')">RAM { sortIcon('RAMKb') }</th>
+                        </tr>
+                     </thead>
+                     <tbody>
+                        <tr foreach="$processes as $proc">
+                           <td class="text-muted">{ $proc['PID'] }</td>
+                           <td class="text-truncate" style="max-width: 460px;" title="{ $proc['CMD'] }">{ $proc['CMD'] }</td>
+                           <td class="text-end">{ number_format($proc['CPUPercentage'], 1) }</td>
+                           <td class="text-end">{ number_format($proc['RAMPercentage'], 1) }</td>
+                           <td class="text-end fw-semibold">{ formatBytes($proc['RAMKb'] * 1024) }</td>
+                        </tr>
+                     </tbody>
+                  </table>
+               </div>
+            </div>
+         </div>
+      </div>
+
+   </div>
+
+</AdminLayout>

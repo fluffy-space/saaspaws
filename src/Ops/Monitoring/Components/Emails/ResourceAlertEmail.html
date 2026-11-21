@@ -1,0 +1,33 @@
+<EmailLayout title="Resource alert">
+    <p>
+        One or more host resources crossed their alert threshold:
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <thead>
+            <tr>
+                <th align="left" style="padding:6px 8px;border-bottom:1px solid #eee;">Resource</th>
+                <th align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">Current</th>
+                <th align="right" style="padding:6px 8px;border-bottom:1px solid #eee;">Threshold</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr foreach="$breaches as $b">
+                <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f4;">
+                    <strong>{$b['label']}</strong>
+                </td>
+                <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f4;color:#c0392b;">
+                    <strong>{fmt($b['value'])}{$b['unit']}</strong>
+                </td>
+                <td align="right" style="padding:6px 8px;border-bottom:1px solid #f4f4f4;">
+                    {fmt($b['threshold'])}{$b['unit']}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <p>
+        <a href="{$baseUrl}/admin/system">Open the system dashboard</a>
+    </p>
+    <p>
+        You will not get another alert for the same resource until it recovers, or after the configured cooldown if it stays high. Tune thresholds under <strong>Settings → monitoring</strong>.
+    </p>
+</EmailLayout>

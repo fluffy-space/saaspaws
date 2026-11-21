@@ -1,0 +1,45 @@
+<EmailLayout title="Weekly resource report">
+    <p>
+        Resource snapshot taken <strong>{$generatedOn}</strong>.
+    </p>
+
+    <h3 style="margin:18px 0 6px;">Host</h3>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <tbody>
+            <tr>
+                <td style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">CPU load</td>
+                <td align="right" style="padding:5px 8px;border-bottom:1px solid #f4f4f4;"><strong>{pct($snapshot['os']['cpu_load'])}</strong></td>
+            </tr>
+            <tr>
+                <td style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">Memory used</td>
+                <td align="right" style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">
+                    <strong>{pct($snapshot['os']['used_percentage'])}</strong>
+                    ({formatBytes($snapshot['os']['mem_used'])} / {formatBytes($snapshot['os']['mem_total'])})
+                </td>
+            </tr>
+            <tr>
+                <td style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">Disk used</td>
+                <td align="right" style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">
+                    <strong>{$snapshot['os']['disk_space_used_precentage']}</strong>
+                    ({$snapshot['os']['disk_space_used']} / {$snapshot['os']['disk_space_total']}, {$snapshot['os']['disk_space_free']} free)
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 style="margin:18px 0 6px;">Redis</h3>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <tbody>
+            <tr>
+                <td style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">Memory (whole instance) · keys in db {$snapshot['redis']['db_index']}</td>
+                <td align="right" style="padding:5px 8px;border-bottom:1px solid #f4f4f4;">
+                    {$snapshot['redis']['used_memory_human']} · {$snapshot['redis']['keys']} keys
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p style="margin-top:18px;">
+        <a href="{$baseUrl}/admin/system">Open the system dashboard</a>
+    </p>
+</EmailLayout>

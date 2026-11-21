@@ -1,0 +1,23 @@
+{
+    "name": "fluffy-space/saaspaws",
+    "description": "SaasPaws - SaaS operations modules for Fluffy Paws apps: in-app deployments, ops (logs, system monitor, cron admin, resource alerts) and backups.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "fluffy-space/paws": "^1.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "SaasPaws\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Fluffy space"
+        }
+    ],
+    "suggest": {
+        "ext-ssh2": "Required by the Deploy module (SSH to the servers it deploys to)."
+    }
+}

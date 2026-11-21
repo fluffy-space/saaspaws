@@ -1,0 +1,84 @@
+<div>
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+        <button type="button" class="btn btn-primary" disabled="{$running}" (click)="askDeploy()">
+            <Icon name="bi-rocket-takeoff" /> Deploy
+        </button>
+        <button type="button" class="btn btn-outline-primary" disabled="{$running}" (click)="askRestart()">
+            <Icon name="bi-arrow-repeat" /> Restart
+        </button>
+        <button type="button" class="btn btn-outline-secondary" disabled="{$running}" (click)="askVault()">
+            <Icon name="bi-safe" /> Push key vault
+        </button>
+        <span if="$running" class="text-muted small">
+            <span class="spinner-border spinner-border-sm me-1"></span> running…
+        </span>
+    </div>
+
+    <div if="{$log !== ''}" class="mb-4">
+        <div class="fw-semibold small mb-1">Live output</div>
+        <pre id="deploy-terminal" class="bg-body-secondary p-3 rounded small mb-0"
+            style="max-height:24rem;overflow:auto"><code>{$log}</code></pre>
+    </div>
+
+    <div class="fw-semibold small mb-1">History</div>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Kind</th>
+                    <th>Server</th>
+                    <th>Slots</th>
+                    <th>Commit</th>
+                    <th>Started</th>
+                    <th>Took</th>
+                    <th>Outcome</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr foreach="$history as $row">
+                    <td class="text-muted">{$row['Id']}</td>
+                    <td>{$row['Kind']}</td>
+                    <td>{$row['ServerName']}</td>
+                    <td class="small">{slotMove($row)}</td>
+                    <td class="small">
+                        <code>{shortSha($row['CommitSha'])}</code>
+                        <div class="text-muted">{$row['CommitMessage']}</div>
+                    </td>
+                    <td class="small text-muted">{formatTime($row['StartedOn'])}</td>
+                    <td class="small text-muted">{duration($row)}</td>
+                    <td><span class="{outcomeClass($row)}">{outcomeText($row)}</span></td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                            (click)="openHistory($row)">Log</button>
+                    </td>
+                </tr>
+                <tr if="{count($history) === 0 && !$loading}">
+                    <td colspan="9" class="text-muted small">Nothing has been deployed yet.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <Modal show="$showConfirm" header="Are you sure?" (close)="cancel()">
+        <div>
+            <p class="mb-2">{$confirmMessage}</p>
+            <Alert if="{$error !== ''}" variant="danger" body="$error" dismissible="{false}" />
+            <div class="d-flex gap-2 justify-content-end">
+                <button type="button" class="btn btn-outline-secondary" (click)="cancel()">Cancel</button>
+                <button type="button" class="btn btn-primary" disabled="{$starting}" (click)="start()">
+                    Yes, {$confirmLabel}
+                </button>
+            </div>
+        </div>
+    </Modal>
+
+    <Modal show="$showRecord" closeButton header="Deployment log" size="lg" (close)="closeHistory()">
+        <div if="$showRecord">
+            <div class="small text-muted mb-2">{$openTitle}</div>
+            <pre class="bg-body-secondary p-3 rounded small mb-0"
+                style="max-height:60vh;overflow:auto"><code>{$openLog}</code></pre>
+        </div>
+    </Modal>
+</div>

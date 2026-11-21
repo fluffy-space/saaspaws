@@ -1,0 +1,29 @@
+<EmailLayout title="Backup failed">
+    <p>
+        The scheduled backup did not complete. Nothing new was stored for the parts below:
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+        <thead>
+            <tr>
+                <th align="left" style="padding:6px 8px;border-bottom:1px solid #eee;">Part</th>
+                <th align="left" style="padding:6px 8px;border-bottom:1px solid #eee;">Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr foreach="$failures as $f">
+                <td align="left" valign="top" style="padding:6px 8px;border-bottom:1px solid #f4f4f4;">
+                    <strong>{$f['label']}</strong>
+                </td>
+                <td align="left" style="padding:6px 8px;border-bottom:1px solid #f4f4f4;color:#c0392b;">
+                    {$f['error']}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <p>
+        <a href="{$baseUrl}/admin/backups">Open the backups page</a>
+    </p>
+    <p>
+        The database backup is retried on every 15-minute tick until it succeeds. You will get this email again after the monitoring cooldown if it is still failing, and not again once a run succeeds.
+    </p>
+</EmailLayout>

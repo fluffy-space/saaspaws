@@ -1,0 +1,20 @@
+<AdminLayout title="Deploy sources">
+    <ListPage title="Deploy sources" columns="$columns" urlSegment="deploy-source" name="Source"
+        deleteMessage="{deleteMessage()}">
+        <DataTable emptyTitle="No sources yet"
+            emptyText="Add the git repository a deploy clones from, with the branch and the access token it needs.">
+            <slotContent name="column_Name" data="$item">
+                <td class="fw-semibold">{$item->Name}</td>
+            </slotContent>
+            <slotContent name="column_GitRepository" data="$item">
+                <td class="small text-muted">{$item->GitRepository}</td>
+            </slotContent>
+            <slotContent name="column_HasToken" data="$item">
+                <td>
+                    <span if="$item->HasToken" class="badge text-bg-success">stored</span>
+                    <span if="!$item->HasToken" class="badge text-bg-light text-muted">none</span>
+                </td>
+            </slotContent>
+        </DataTable>
+    </ListPage>
+</AdminLayout>

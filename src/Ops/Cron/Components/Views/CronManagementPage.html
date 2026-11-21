@@ -1,0 +1,67 @@
+<AdminLayout title="$title" fullWidth >
+
+   <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+      <div class="d-flex align-items-center gap-3">
+         <span class="d-inline-flex align-items-center">
+            <Icon name="bi-heart-pulse" />
+            <span class="ms-1">Cron loop:</span>
+            <span if="$data && !isStale()" class="badge bg-success ms-2">healthy</span>
+            <span if="$data && isStale()" class="badge bg-danger ms-2">stale</span>
+            <span class="text-muted small ms-2">heartbeat { heartbeatText() }</span>
+         </span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+         <button type="button" class="btn btn-outline-secondary btn-sm" disabled="$busy" (click)="load">
+            <Icon name="bi-arrow-clockwise" /> Refresh
+         </button>
+         <button if="$data && !isPaused()" type="button" class="btn btn-warning btn-sm" disabled="$busy" (click)="pause">
+            <Icon name="bi-pause-fill" /> Pause all
+         </button>
+         <button if="$data && isPaused()" type="button" class="btn btn-success btn-sm" disabled="$busy" (click)="resume">
+            <Icon name="bi-play-fill" /> Resume all
+         </button>
+      </div>
+   </div>
+
+   <div if="$data && isPaused()" class="alert alert-warning show py-2">
+      <Icon name="bi-pause-circle" />
+      All cron jobs are <span class="fw-semibold">paused</span>. Scheduled runs are skipped until resumed.
+   </div>
+
+   <div if="!$data" class="text-muted">Loading…</div>
+
+   <div if="$data" class="table-responsive">
+      <table class="table align-middle">
+         <thead>
+            <tr>
+               <th>Status</th>
+               <th>Job</th>
+               <th>Schedule</th>
+               <th>Last run</th>
+               <th>Duration</th>
+               <th>Next run</th>
+               <th class="text-end">Runs</th>
+               <th class="text-end">Fails</th>
+               <th>Last error</th>
+            </tr>
+         </thead>
+         <tbody>
+            <tr foreach="$data['jobs'] as $job">
+               <td><span class="badge { badgeClass($job) }">{ badgeText($job) }</span></td>
+               <td class="fw-semibold text-break">{ $job['name'] }</td>
+               <td><code>{ $job['schedule'] }</code></td>
+               <td class="text-nowrap">{ fmtTime($job['lastFinish']) }</td>
+               <td class="text-nowrap">{ fmtDuration($job['lastDurationMs']) }</td>
+               <td class="text-nowrap">{ fmtTime($job['nextRun']) }</td>
+               <td class="text-end">{ number_format($job['runCount']) }</td>
+               <td class="text-end">{ number_format($job['failCount']) }</td>
+               <td class="text-danger small text-break">{ $job['lastError'] }</td>
+            </tr>
+            <tr if="count($data['jobs']) === 0">
+               <td colspan="9" class="text-muted">No cron jobs registered.</td>
+            </tr>
+         </tbody>
+      </table>
+   </div>
+
+</AdminLayout>

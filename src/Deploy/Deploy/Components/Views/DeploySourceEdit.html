@@ -1,0 +1,43 @@
+<AdminLayout title="Edit source">
+    <EditHeader title="{$createMode ? 'Add source' : 'Edit source'}" backUrl="/admin/deploy-source"
+        createMode="$createMode" state="$state" (click)="onSave" />
+    <div class="card shadow-sm p-2">
+        <div if="$item && $validation" class="p-2">
+            <ActionForm #actionForm (submit)="onSave" id="page-form" action="/admin/deploy-source" method="post"
+                rules="{$validation->getValidationRules()}">
+                <div class="row">
+                    <div class="col-12 col-lg-6">
+                        <TextInput type="text" wrapperClass="col-12" label="Name" placeholder="myapp"
+                            inputClass="form-control" id="Name" model="$item->Name" />
+                        <TextInput type="text" wrapperClass="col-12" label="Repository"
+                            placeholder="https://github.com/you/myapp.git"
+                            hint="HTTPS. The token below is put into the clone URL, so nothing has to answer a git prompt."
+                            inputClass="form-control" id="GitRepository" model="$item->GitRepository" />
+                        <TextInput type="text" wrapperClass="col-12" label="Branch" placeholder="main"
+                            inputClass="form-control" id="GitBranch" model="$item->GitBranch" />
+                        <TextInput type="text" wrapperClass="col-12" label="Git user" placeholder="your-user"
+                            hint="Blank uses x-access-token, which is what a GitHub PAT wants."
+                            inputClass="form-control" id="GitUser" model="$item->GitUser" />
+                        <TextInput textarea="true" rows="2" wrapperClass="col-12" label="Description"
+                            inputClass="form-control" id="Description" model="$item->Description" />
+                    </div>
+                    <div class="col-12 col-lg-6">
+                        <div class="alert alert-secondary show py-2 small">
+                            <span if="$item->HasToken">A token is stored and never shown again. Leave blank to keep
+                                it, or paste a new one to replace it.</span>
+                            <span if="!$item->HasToken">No token stored. A private repository needs one.</span>
+                        </div>
+                        <TextInput type="password" wrapperClass="col-12" label="Access token"
+                            placeholder="ghp_..." hint="Scrubbed out of every deploy log this tool writes."
+                            inputClass="form-control" id="GitAccessToken" model="$item->GitAccessToken" />
+                        <TextInput textarea="true" rows="6" wrapperClass="col-12" label="Build commands"
+                            placeholder="composer install --no-dev --optimize-autoloader"
+                            hint="One per line, run in the freshly cloned directory. Blank uses this project's default: composer install, npm ci, php fluffy build."
+                            inputClass="form-control" id="BuildCommand" model="$item->BuildCommand" />
+                    </div>
+                </div>
+                <ValidationMessage #generalMessages />
+            </ActionForm>
+        </div>
+    </div>
+</AdminLayout>
