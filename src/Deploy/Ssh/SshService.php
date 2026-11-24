@@ -17,8 +17,10 @@ use Throwable;
  *
  * TWO MODES, and the choice matters:
  *
- *  - `exec()` — one channel per command. Gives a real `exit_status`, keeps stderr separate, and
- *    cannot be confused by shell echo. **Use this unless the command asks questions.**
+ *  - `exec()` — one channel per command. Keeps stderr separate and cannot be confused by shell
+ *    echo. Its exit code comes from a marker line the command prints last, NOT from the
+ *    channel's `exit_status`, which the coroutine client often reports as 0 for a failed command
+ *    (see exec()). **Use this unless the command asks questions.**
  *  - `openShell()` + `execute()` — one persistent login shell for commands that prompt
  *    (git credentials, `composer` confirmations, a sudo password). Completion is detected with
  *    a random marker echoed back, and the marker carries `$?` so shell mode still yields exit
@@ -144,7 +146,18 @@ class SshService implements IDisposable
         $started = microtime(true);
         $this->log('$ ' . $this->scrub($command) . "\n");
 
-        $stream = @ssh2_exec($this->connection, $this->bound($command, $seconds));
+        // The exit code travels IN the output: the command runs in a subshell, then prints
+        // "\nRC:<code>:<token>\n" as its last line. The channel's own exit_status cannot be
+        // trusted here: with the coroutine client the channel often reaches EOF before the
+        // exit-status message, and the meta data then says 0. Measured 2026-11-24 against a real
+        // box, 30 runs each: `test -f /missing` reported 0 five times, `exit 3` seven times,
+        // `ls /missing` eleven times. A failing build or migration would have passed as success.
+        // Run under sh -c, so the login user's own shell (fish, csh) cannot misread the wrapper.
+        $token = bin2hex(random_bytes(8));
+        $wrapped = '( ' . $this->bound($command, $seconds) . ' ); printf ' . escapeshellarg('\nRC:%s:' . $token . '\n') . ' "$?"';
+        $markerPattern = '/\nRC:(\d+):' . $token . '\n?/';
+
+        $stream = @ssh2_exec($this->connection, 'sh -c ' . escapeshellarg($wrapped));
         if (!$stream) {
             throw new SshException('Failed to open an exec channel for: ' . $this->scrub($command));
         }
@@ -194,10 +207,18 @@ class SshService implements IDisposable
         $deadline = microtime(true) + $seconds + 30;
         $out = '';
         $err = '';
+        // How much of $out has gone to the live log. The tail is held back until the end so the
+        // marker line, which may arrive split across reads, never reaches the log.
+        $logged = 0;
+        $holdBack = 64;
         // Read both channels until each hits EOF, streaming as we go so a long build is visible
         // while it runs rather than only at the end.
         while (!feof($stream) || !feof($stderrStream)) {
             if (microtime(true) > $deadline) {
+                // The held-back tail is usually the line that explains the hang: log it first.
+                if (strlen($out) > $logged) {
+                    $this->log((string) preg_replace($markerPattern, '', substr($out, $logged)));
+                }
                 @fclose($stderrStream);
                 @fclose($stream);
                 throw new SshException(
@@ -208,7 +229,11 @@ class SshService implements IDisposable
             $chunk = feof($stream) ? '' : (string) fread($stream, self::READ_CHUNK);
             if ($chunk !== '') {
                 $out .= $chunk;
-                $this->log($chunk);
+                $safe = strlen($out) - $holdBack;
+                if ($safe > $logged) {
+                    $this->log(substr($out, $logged, $safe - $logged));
+                    $logged = $safe;
+                }
             }
             $errChunk = feof($stderrStream) ? '' : (string) fread($stderrStream, self::READ_CHUNK);
             if ($errChunk !== '') {
@@ -220,10 +245,23 @@ class SshService implements IDisposable
             }
         }
 
-        // Only final once the channel has drained — reading it earlier reports 0 for a command
-        // that is still running.
-        $meta = stream_get_meta_data($stream);
-        $exitCode = isset($meta['exit_status']) ? (int) $meta['exit_status'] : null;
+        // The marker is the exit code. It is normally the last line, but a background child can
+        // still print after it, so take the LAST occurrence wherever it is and cut it out by
+        // position (no second copy of a large output). No marker (the channel died first): the
+        // command FAILS. The channel's own status is exactly what cannot be trusted, so falling
+        // back to it would turn a lost connection into a success.
+        $exitCode = null;
+        if (preg_match_all($markerPattern, $out, $all, PREG_OFFSET_CAPTURE | PREG_SET_ORDER)) {
+            $last = end($all);
+            $exitCode = (int) $last[1][0];
+            $at = $last[0][1];
+            $out = substr($out, 0, $at) . substr($out, $at + strlen($last[0][0]));
+        } else {
+            $this->note('[ssh] no exit marker came back (connection lost?): treated as failed');
+        }
+        if (strlen($out) > $logged) {
+            $this->log(substr($out, $logged));
+        }
         @fclose($stderrStream);
         @fclose($stream);
 
