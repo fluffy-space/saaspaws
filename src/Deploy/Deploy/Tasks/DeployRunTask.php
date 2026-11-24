@@ -24,7 +24,7 @@ class DeployRunTask
     ) {}
 
     /**
-     * @param string $kind    'deploy' | 'vault' | 'restart' | 'check'
+     * @param string $kind    'deploy' | 'vault' | 'restart' | 'check' | 'setup'
      * @param array  $context ['userName' => ?string]
      */
     public function execute(int $applicationId, string $kind, array $context, int $runId): void
@@ -40,6 +40,7 @@ class DeployRunTask
                 'vault' => $this->deployments->deployKeyVault($applicationId, $context),
                 'restart' => $this->deployments->restart($applicationId, $context),
                 'check' => $this->deployments->check($applicationId, $context),
+                'setup' => $this->deployments->setup($applicationId, $context),
                 default => $this->deployments->deploy($applicationId, $context),
             };
 

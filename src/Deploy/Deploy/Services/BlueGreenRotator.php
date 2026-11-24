@@ -40,11 +40,57 @@ class BlueGreenRotator
         if (!$conf->ok()) {
             return null;
         }
-        // `server 127.0.0.1:8221 fail_timeout=1;` — the port is what identifies the slot.
-        if (!preg_match('/server\s+127\.0\.0\.1:(\d+)/', $conf->output, $m)) {
+        // `server 127.0.0.1:8221 fail_timeout=1;`: the port is what identifies the slot. The first
+        // line that is not a standby: Fluffy's builder writes one line per colour and marks every
+        // one but the live one `down`.
+        if (!preg_match_all('/^\s*server\s+127\.0\.0\.1:(\d+)([^;]*);/m', $conf->output, $all, PREG_SET_ORDER)) {
             return null;
         }
-        return (int) $m[1];
+        foreach ($all as $line) {
+            if (!preg_match('/\bdown\b/', $line[2])) {
+                return (int) $line[1];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The upstream file pointed at $port. With one server line per colour (Fluffy's builder) the
+     * `down` marker moves: the line already on $port becomes the live one and the others standbys,
+     * so each line keeps its port and its colour comment. A file with no line on $port (one server
+     * line, hand-written) gets its live line's port rewritten, as before.
+     */
+    public static function moveTo(string $conf, int $port): string
+    {
+        $lines = preg_split('/\R/', $conf);
+        $hasTarget = false;
+        foreach ($lines as $line) {
+            if (preg_match('/^\s*server\s+127\.0\.0\.1:' . $port . '\b/', $line)) {
+                $hasTarget = true;
+            }
+        }
+        foreach ($lines as $i => $line) {
+            if (!preg_match('/^(\s*server\s+127\.0\.0\.1:)(\d+)([^;]*);(.*)$/', $line, $m)) {
+                continue;
+            }
+            [, $head, $linePort, $options, $tail] = $m;
+            $isDown = (bool) preg_match('/\bdown\b/', $options);
+            if (!$hasTarget) {
+                if (!$isDown) {
+                    $lines[$i] = $head . $port . $options . ';' . $tail;
+                }
+                continue;
+            }
+            if ((int) $linePort === $port) {
+                $options = trim((string) preg_replace('/\s*\bdown\b/', '', $options));
+                $options = $options === '' ? ' fail_timeout=1' : ' ' . $options;
+                $lines[$i] = $head . $linePort . $options . ';' . str_replace('(standby)', '(ACTIVE)', $tail);
+            } elseif (!$isDown) {
+                $options = trim((string) preg_replace('/\s*\bfail_timeout=\S+/', '', $options));
+                $lines[$i] = $head . $linePort . ($options === '' ? '' : ' ' . $options) . ' down;' . str_replace('(ACTIVE)', '(standby)', $tail);
+            }
+        }
+        return implode("\n", $lines);
     }
 
     /**
@@ -76,11 +122,13 @@ class BlueGreenRotator
             $backup = $move['conf'] . '.rotate-backup';
             $this->ssh->sudo("cp -f $conf " . escapeshellarg($backup));
             $backups[] = ['conf' => $move['conf'], 'backup' => $backup];
-            // Only the loopback upstream line is touched; everything else in the file is left
-            // alone — these files are hand-editable and may carry keepalive/fail_timeout tuning.
-            $this->ssh->sudo(
-                "sed -i -E 's|server[[:space:]]+127\\.0\\.0\\.1:[0-9]+|server 127.0.0.1:{$move['port']}|' $conf"
-            );
+            // Only the loopback server lines are touched (moveTo()); everything else in the file is
+            // left alone: these files are hand-editable and may carry keepalive tuning. Written to a
+            // temporary file by the login, then copied over the conf as root.
+            $staged = '/tmp/' . basename($move['conf']) . '.rotate-' . bin2hex(random_bytes(4));
+            $this->ssh->writeFile($staged, self::moveTo($this->ssh->read('cat ' . $conf), (int) $move['port']), 0644);
+            $this->ssh->sudo('cp -f ' . escapeshellarg($staged) . " $conf");
+            $this->ssh->exec('rm -f ' . escapeshellarg($staged), false);
         }
 
         $test = $this->ssh->sudo($this->configTestCommand, enforce: false);

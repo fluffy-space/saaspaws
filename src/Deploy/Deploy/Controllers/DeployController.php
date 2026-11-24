@@ -76,12 +76,21 @@ class DeployController extends BaseController
     }
 
     /**
-     * POST /api/admin/deploy/{id}/check — a read-only look at the application's servers
+     * POST /api/admin/deploy/{id}/check: a read-only look at the application's servers
      * (DeploymentService::check): prerequisites, what is already there, what is in the way.
      */
     public function Check(int $id)
     {
         return $this->start($id, 'check');
+    }
+
+    /**
+     * POST /api/admin/deploy/{id}/setup: prepare a fresh box and make the first release live
+     * (DeploymentService::setup). Refuses where the application already runs.
+     */
+    public function SetUp(int $id)
+    {
+        return $this->start($id, 'setup');
     }
 
     /**

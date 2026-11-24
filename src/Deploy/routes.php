@@ -34,6 +34,7 @@ $router->section('/api/', function (Router $router) {
             $router->post('deploy/{id}/vault', [DeployController::class, 'PushVault']);
             $router->post('deploy/{id}/restart', [DeployController::class, 'Restart']);
             $router->post('deploy/{id}/check', [DeployController::class, 'Check']);
+            $router->post('deploy/{id}/setup', [DeployController::class, 'SetUp']);
             $router->get('deploy/{id}/history', [DeployController::class, 'History']);
 
             // CRUD for the deploy entities themselves (the ListPage/EditPage convention).

@@ -28,7 +28,7 @@ class DeployRunPanel extends BaseComponent
 
     // --- confirmation ----------------------------------------------------------------
     public bool $showConfirm = false;
-    /** deploy | vault | restart | check */
+    /** deploy | vault | restart | check | setup */
     public string $kind = 'deploy';
     public bool $starting = false;
     public string $error = '';
@@ -110,6 +110,21 @@ class DeployRunPanel extends BaseComponent
             . ' It only looks: prerequisites, what is already there, and what of other applications'
             . ' is in the way. It changes no configuration and restarts nothing.';
         $this->confirmLabel = 'check';
+        $this->showConfirm = true;
+    }
+
+    /** Writes to the server: folders, a database, units, a vhost. Only for a box it does not run on yet. */
+    public function askSetup()
+    {
+        $this->kind = 'setup';
+        $this->error = '';
+        $this->confirmMessage = "Set up {$this->name} on every server attached to it?"
+            . ' It checks first and stops if anything is missing or in the way. Then it creates the'
+            . ' folders, pushes the key vault, creates the PostgreSQL role and databases, builds and'
+            . ' starts the first release, and adds its vhost (on a self-signed certificate). Other'
+            . ' sites on the box are not touched; a vhost that breaks the web server config is removed'
+            . ' again. It refuses where the application already runs: use Deploy there.';
+        $this->confirmLabel = 'set it up';
         $this->showConfirm = true;
     }
 

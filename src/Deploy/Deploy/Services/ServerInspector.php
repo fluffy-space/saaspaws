@@ -47,7 +47,10 @@ class ServerInspector
     /** PHP extensions a Fluffy app loads: Swoole, its PostgreSQL (PDO) and Redis pools, mbstring. */
     private const PHP_EXTENSIONS = ['swoole', 'pdo_pgsql', 'redis', 'mbstring', 'openssl'];
 
-    /** @var list<array{status: string, group: string, label: string, detail: string}> */
+    /** The base folder may hold these (our layout) and nothing else, or setup refuses to touch it. */
+    public const LAYOUT = ['blue', 'green', 'blue_staging', 'green_staging', 'vault', 'public', 'files', 'logs', 'private', 'geoip', 'live-color', 'workers'];
+
+    /** @var list<array{status: string, group: string, label: string, detail: string, setup: bool}> */
     private array $findings = [];
     /** Whether `sudo true` actually ran: a stored password can be wrong, which canSudo() cannot see. */
     private bool $sudo = false;
@@ -58,7 +61,7 @@ class ServerInspector
      * @param DeployUpstreamEntity[] $upstreams
      * @param array<string, mixed>|null $vault the decoded key vault, or null when there is none
      * @param callable(string): void $log
-     * @return list<array{status: string, group: string, label: string, detail: string}>
+     * @return list<array{status: string, group: string, label: string, detail: string, setup: bool}>
      */
     public function inspect(
         SshService $ssh,
@@ -88,6 +91,7 @@ class ServerInspector
             fn() => $this->units($ssh, $services),
             fn() => $this->webServer($ssh, $app, $upstreams),
             fn() => $this->dns($ssh, $app, $server),
+            fn() => $this->mail($ssh, $vault),
         ] as $probe) {
             try {
                 $probe();
@@ -101,12 +105,22 @@ class ServerInspector
     /** True when nothing blocks setting the application up. */
     public static function ready(array $findings): bool
     {
-        foreach ($findings as $finding) {
-            if (in_array($finding['status'], [self::MISSING, self::CONFLICT, self::ERROR], true)) {
-                return false;
-            }
-        }
-        return true;
+        return self::blockers($findings) === [];
+    }
+
+    /**
+     * What stops Set up: anything missing, in the way or unknown, and the warnings that would only
+     * surface at its web-server step, after the app has started (a config that already fails its
+     * test, no includes, no self-signed pair, a shared snippet ours would change).
+     *
+     * @return list<array{status: string, group: string, label: string, detail: string, setup: bool}>
+     */
+    public static function blockers(array $findings): array
+    {
+        return array_values(array_filter(
+            $findings,
+            fn($f) => in_array($f['status'], [self::MISSING, self::CONFLICT, self::ERROR], true) || $f['setup']
+        ));
     }
 
     // ------------------------------------------------------------------ probes
@@ -125,6 +139,11 @@ class ServerInspector
         $mb = (int) $free;
         $this->add($mb > 0 && $mb < 2048 ? self::WARN : self::INFO, 'system', 'disk', $free . ($mb > 0 && $mb < 2048 ? ' (a build needs room: composer, npm, two releases)' : ''));
         $this->add(self::INFO, 'system', 'time zone', $this->read($ssh, "timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null"));
+        // Every timestamp the app records (rounds, incidents, logs) is only as right as this clock.
+        $synced = $this->read($ssh, 'timedatectl show -p NTPSynchronized --value 2>/dev/null');
+        $this->add($synced === 'yes' ? self::OK : self::WARN, 'system', 'clock', $synced === 'yes'
+            ? 'synchronised (NTP)'
+            : 'not reported as NTP-synchronised: recorded times may drift');
     }
 
     private function privileges(SshService $ssh): void
@@ -246,27 +265,43 @@ class ServerInspector
             ? 'available'
             : 'not available: install postgresql-contrib');
         $databases = $q("SELECT string_agg(datname, ', ' ORDER BY datname) FROM pg_database WHERE NOT datistemplate");
+        // Two colours of a new app add their pools (~8 connections each) next to everyone else's.
+        $room = $q("SELECT current_setting('max_connections')::int - (SELECT count(*) FROM pg_stat_activity)");
+        $free = (int) trim($room->output);
+        $this->add($free >= 30 ? self::OK : self::WARN, 'postgresql', 'connections', "$free free of max_connections" . ($free < 30 ? ': a new app with two colours may run short' : ''));
         $this->add(self::INFO, 'postgresql', 'databases on the box', trim($databases->output));
 
         $db = (string) ($vault['PG_DB'] ?? '');
         $user = (string) ($vault['PG_USER'] ?? '');
         if ($db === '' || $user === '') {
-            $this->add(self::WARN, 'postgresql', 'database', 'the key vault names no PG_DB / PG_USER, so there is nothing to look for');
+            $this->add(self::MISSING, 'postgresql', 'database', 'the key vault names no PG_DB / PG_USER');
             return;
         }
-        $hasDb = trim($q('SELECT 1 FROM pg_database WHERE datname = ' . $this->literal($db))->output) === '1';
+        foreach (['PG_DB' => $db, 'PG_USER' => $user] as $key => $name) {
+            // 56: room for the "_verify" twin inside PostgreSQL's 63-byte names.
+            if (!preg_match('/^[a-z_][a-z0-9_]{0,55}$/', $name) || $name === 'postgres' || str_starts_with($name, 'pg_')) {
+                $this->add(self::CONFLICT, 'postgresql', $key, "'$name' is not a plain lowercase name of ours (reserved, too long or odd characters)");
+                return;
+            }
+        }
+        $ownerOf = fn(string $name) => trim($q('SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = ' . $this->literal($name))->output);
         $hasRole = trim($q('SELECT 1 FROM pg_roles WHERE rolname = ' . $this->literal($user))->output) === '1';
-        $this->add($hasRole ? self::EXISTS : self::OK, 'postgresql', "role $user", $hasRole ? 'exists' : 'free: setup creates it');
-        if (!$hasDb) {
-            $this->add(self::OK, 'postgresql', "database $db", 'free: setup creates it');
-            return;
+        $owner = $ownerOf($db);
+        $verifyOwner = $ownerOf($db . '_verify');
+        if ($owner === '' && $hasRole) {
+            // A role with no database of ours is someone else's: Set up would reset its password.
+            $this->add(self::CONFLICT, 'postgresql', "role $user", "exists but owns no '$db' database: another application's role?");
+        } elseif ($owner !== '' && $owner !== $user) {
+            $this->add(self::CONFLICT, 'postgresql', "database $db", "exists but is owned by '$owner', not $user: another application's database?");
+        } elseif ($owner === $user) {
+            $tables = trim($q("SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')", $db)->output);
+            $this->add(self::EXISTS, 'postgresql', "database $db", "exists, owned by $user, $tables tables");
+        } else {
+            $this->add(self::OK, 'postgresql', "role $user / database $db", 'free: setup creates them');
         }
-        $owner = trim($q('SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = ' . $this->literal($db))->output);
-        $tables = trim($q("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'", $db)->output);
-        $ours = $owner === $user;
-        $this->add($ours ? self::EXISTS : self::CONFLICT, 'postgresql', "database $db", $ours
-            ? "exists, owned by $user, $tables tables"
-            : "exists but is owned by '$owner', not $user: another application's database?");
+        if ($verifyOwner !== '' && $verifyOwner !== $user) {
+            $this->add(self::CONFLICT, 'postgresql', "database {$db}_verify", "exists but is owned by '$verifyOwner'");
+        }
     }
 
     private function redis(SshService $ssh): void
@@ -291,8 +326,14 @@ class ServerInspector
     private function workspace(SshService $ssh, DeployApplicationEntity $app, string $baseFolder, string $vaultPath, ?array $vault): void
     {
         if ($ssh->test('test -d ' . escapeshellarg($baseFolder))) {
-            $listing = $this->read($ssh, 'ls -1 ' . escapeshellarg($baseFolder) . ' 2>/dev/null | tr "\n" " "');
-            $this->add(self::EXISTS, 'workspace', $baseFolder, $listing !== '' ? "contains: $listing" : 'empty');
+            $entries = array_values(array_filter(explode("\n", $this->read($ssh, 'ls -1A ' . escapeshellarg($baseFolder) . ' 2>/dev/null'))));
+            $foreign = array_values(array_diff($entries, self::LAYOUT));
+            if ($foreign !== []) {
+                // A shared parent (/var/www, /workspace): Set up would chown and chmod it.
+                $this->add(self::CONFLICT, 'workspace', $baseFolder, 'holds more than this application\'s layout: ' . implode(', ', array_slice($foreign, 0, 10)));
+            } else {
+                $this->add(self::EXISTS, 'workspace', $baseFolder, $entries !== [] ? 'contains: ' . implode(' ', $entries) : 'empty');
+            }
         } else {
             $this->add(self::OK, 'workspace', $baseFolder, 'free: setup creates it');
         }
@@ -360,13 +401,31 @@ class ServerInspector
             $test = $ssh->sudo($binary . ' -t', false, 30);
             $this->add($test->ok() ? self::OK : self::WARN, 'web server', 'config test', $test->ok()
                 ? 'passes now (setup must leave it passing)'
-                : 'FAILS before we touch anything: ' . $this->first($test->text()));
+                : 'FAILS before we touch anything: ' . $this->first($test->text()), !$test->ok());
         }
         // Fluffy writes into /etc/nginx; an OpenResty box only reads it if its main config includes it.
         $includes = trim($ssh->exec("grep -rhoE 'include[[:space:]]+[^;]*(sites-enabled|conf\\.d)[^;]*' /etc/nginx/nginx.conf /usr/local/openresty/nginx/conf/nginx.conf 2>/dev/null | sort -u | tr '\\n' ' '", false, 15)->output);
         $this->add($includes !== '' ? self::OK : self::WARN, 'web server', 'includes', $includes !== ''
             ? $includes
-            : 'no include of /etc/nginx/sites-enabled or conf.d found: a vhost written there would not be read');
+            : 'no include of /etc/nginx/sites-enabled or conf.d found: a vhost written there would not be read', $includes === '');
+
+        // nginx picks the server for an unknown host name PER LISTEN SOCKET: the `default_server` on
+        // it, else the first block read that listens on it. Our vhost must not become that for any
+        // socket it opens (a socket nobody else listens on included: IPv6, typically), or it would
+        // answer other sites' visitors. Read from the config nginx actually loads (`-T`).
+        $domainName = trim((string) $app->Domain);
+        if ($domainName !== '' && $this->sudo) {
+            $dump = $ssh->sudo($binary . ' -T', false, 60);
+            $template = class_exists(InstalledVersions::class) ? InstalledVersions::getInstallPath('fluffy-space/fluffy') . '/bin/setup/nginx.conf' : '';
+            $ourListens = is_file($template) ? self::listensIn((string) file_get_contents($template)) : ['443', '[::]:443', '80', '[::]:80'];
+            if (!$dump->ok()) {
+                $this->add(self::ERROR, 'web server', 'fallback per socket', 'could not read the loaded config (' . $this->first($dump->text()) . ')');
+            } else {
+                foreach (self::fallbacks($dump->output, "/etc/nginx/sites-enabled/$domainName", $ourListens) as $socket => [$safe, $detail]) {
+                    $this->add($safe ? self::OK : self::WARN, 'web server', "fallback on $socket", $detail, !$safe);
+                }
+            }
+        }
 
         $domain = trim((string) $app->Domain);
         if ($domain !== '') {
@@ -389,10 +448,10 @@ class ServerInspector
         $selfSigned = $ssh->test('test -f /etc/ssl/certs/nginx-selfsigned.crt');
         $this->add($selfSigned ? self::OK : self::WARN, 'web server', 'self-signed pair', $selfSigned
             ? 'present (the vhost uses it until a real certificate exists)'
-            : '/etc/ssl/certs/nginx-selfsigned.crt missing: setup has to create it or the vhost fails the config test');
+            : '/etc/ssl/certs/nginx-selfsigned.crt missing: the new vhost would fail the config test', !$selfSigned);
 
         foreach ($upstreams as $upstream) {
-            $path = "/etc/nginx/conf.d/10-upstream-{$upstream->Name}.conf";
+            $path = $upstream->confPath();
             $taken = $ssh->exec('grep -rlE ' . escapeshellarg('upstream[[:space:]]+' . self::ere((string) $upstream->Name) . '[[:space:]]*\{') . ' /etc/nginx /usr/local/openresty/nginx/conf 2>/dev/null | grep -v ' . escapeshellarg($path . '$'), false, 15)->output;
             $taken = trim($taken);
             if ($taken !== '') {
@@ -412,7 +471,7 @@ class ServerInspector
             $local = is_file($localFile) ? hash_file('sha256', $localFile) : '';
             $this->add($local === '' || $local === $remote ? self::INFO : self::WARN, 'web server', 'shared security headers', $local === '' || $local === $remote
                 ? "$snippet exists" . ($local === $remote ? ' and matches ours' : '')
-                : "$snippet exists and DIFFERS from this Fluffy's copy: writing ours changes the headers of every site that includes it");
+                : "$snippet exists and DIFFERS from this Fluffy's copy: writing ours changes the headers of every site that includes it", $local !== '' && $local !== $remote);
         }
     }
 
@@ -436,12 +495,114 @@ class ServerInspector
         }
     }
 
+    /** Can the box reach the vault's mail server? Without it every alert and notice fails quietly. */
+    private function mail(SshService $ssh, ?array $vault): void
+    {
+        $host = trim((string) ($vault['email_host'] ?? ''));
+        if ($host === '') {
+            $this->add(self::INFO, 'mail', 'SMTP', 'the key vault names no email_host');
+            return;
+        }
+        if (!preg_match('/^[a-z0-9.-]+$/i', $host)) {
+            $this->add(self::WARN, 'mail', 'SMTP', "email_host '$host' is not a host name");
+            return;
+        }
+        $port = (int) ($vault['email_port'] ?? 0) ?: (strtolower((string) ($vault['email_SMTPSecure'] ?? '')) === 'ssl' ? 465 : 587);
+        $open = $ssh->exec('timeout 8 bash -c ' . escapeshellarg("exec 3<>/dev/tcp/$host/$port"), false, 15)->ok();
+        $this->add($open ? self::OK : self::WARN, 'mail', "SMTP $host:$port", $open
+            ? 'reachable from the box'
+            : 'NOT reachable from the box (firewall, egress): alerts and incident emails would not send');
+    }
+
+    /** The sockets the `listen` lines of a config text open, normalised ("*:443", "[::]:443"). @return string[] */
+    public static function listensIn(string $config): array
+    {
+        $out = [];
+        foreach (preg_split('/\R/', $config) as $line) {
+            $line = preg_replace('/#.*/', '', $line);
+            if (preg_match('/^\s*listen\s+([^\s;]+)/', $line, $m) && ($socket = self::socket($m[1])) !== null) {
+                $out[] = $socket;
+            }
+        }
+        return array_values(array_unique($out));
+    }
+
+    /** "443" -> "*:443", "[::]:443" stays, "1.2.3.4:443" stays; a unix socket -> null. */
+    public static function socket(string $listen): ?string
+    {
+        if (preg_match('/^\d+$/', $listen)) {
+            return '*:' . $listen;
+        }
+        if (preg_match('/^(\[[0-9a-f:.]*\]|[0-9.]+|\*):(\d+)$/i', $listen, $m)) {
+            return strtolower($m[1]) . ':' . $m[2];
+        }
+        return null;
+    }
+
+    /**
+     * Per socket our vhost would open: is it safe, and why. $dump is `nginx -T`: each loaded file
+     * after a "# configuration file <path>:" line, in the order nginx reads them. Server blocks in
+     * $ours (a rerun) are ignored. Unsafe when nobody else listens on the socket, or when no
+     * `default_server` covers it and our file would be read before the first other block there
+     * (same directory, alphabetical; a file from an earlier include always comes first).
+     *
+     * @param string[] $ourSockets as listensIn() returns them
+     * @return array<string, array{0: bool, 1: string}>
+     */
+    public static function fallbacks(string $dump, string $ours, array $ourSockets): array
+    {
+        $blocks = [];
+        $file = '';
+        $depth = 0;
+        $current = null;
+        foreach (preg_split('/\R/', $dump) as $raw) {
+            if (preg_match('/^# configuration file (.+):$/', $raw, $m)) {
+                $file = $m[1];
+                $depth = 0;
+                $current = null;
+                continue;
+            }
+            $line = preg_replace('/#.*/', '', $raw);
+            if ($current === null && preg_match('/^\s*server\s*\{/', $line) && $file !== $ours) {
+                $current = ['file' => $file, 'listens' => [], 'start' => $depth];
+            }
+            if ($current !== null && preg_match('/^\s*listen\s+([^\s;]+)([^;]*);/', $line, $m) && ($socket = self::socket($m[1])) !== null) {
+                $current['listens'][$socket] = ($current['listens'][$socket] ?? false) || str_contains($m[2], 'default_server') || str_contains($m[2], 'default ');
+            }
+            $depth += substr_count($line, '{') - substr_count($line, '}');
+            if ($current !== null && $depth <= $current['start']) {
+                $blocks[] = $current;
+                $current = null;
+            }
+        }
+        $result = [];
+        foreach ($ourSockets as $socket) {
+            $there = array_values(array_filter($blocks, fn($b) => array_key_exists($socket, $b['listens'])));
+            if ($there === []) {
+                $result[$socket] = [false, "no other site listens on $socket: ours would answer ALL traffic there, any host name"];
+                continue;
+            }
+            $default = array_values(array_filter($there, fn($b) => $b['listens'][$socket]));
+            if ($default !== []) {
+                $result[$socket] = [true, 'default_server is ' . $default[0]['file']];
+                continue;
+            }
+            $first = $there[0]['file'];
+            $oursFirst = dirname($first) === dirname($ours) && strcmp(basename($ours), basename($first)) < 0;
+            $result[$socket] = $oursFirst
+                ? [false, "no default_server, and ours would be read before $first: it would answer unknown host names"]
+                : [true, "no default_server; the fallback stays $first"];
+        }
+        return $result;
+    }
+
     // ------------------------------------------------------------------ helpers
 
-    private function add(string $status, string $group, string $label, string $detail): void
+    /** @param bool $blocksSetup a warning that Set up must not go past (see blockers()) */
+    private function add(string $status, string $group, string $label, string $detail, bool $blocksSetup = false): void
     {
-        $this->findings[] = ['status' => $status, 'group' => $group, 'label' => $label, 'detail' => trim($detail)];
-        ($this->log)(sprintf('[%s] %s: %s - %s', $status, $group, $label, trim($detail)));
+        $this->findings[] = ['status' => $status, 'group' => $group, 'label' => $label, 'detail' => trim($detail), 'setup' => $blocksSetup];
+        ($this->log)(sprintf('[%s] %s: %s - %s%s', $status, $group, $label, trim($detail), $blocksSetup ? ' (blocks Set up)' : ''));
     }
 
     private function read(SshService $ssh, string $command): string

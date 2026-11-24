@@ -65,7 +65,10 @@ class DeploymentService
         private DeploymentHistoryRepository $history,
         private Config $config,
         private ServerInspector $inspector,
-    ) {}
+        private ServerProvisioner $provisioner,
+    ) {
+        $this->provisioner->onLog(fn(string $line) => $this->log($line));
+    }
 
     public function onLog(?callable $callback): void
     {
@@ -165,75 +168,7 @@ class DeploymentService
                         . ' — it is pushed anyway, but a deployment will refuse to build with it.');
                 }
                 $ssh = $this->connect($app, null, $server);
-                $dir = $this->vaultDir($app);
-                $path = $dir . '/' . $this->vaultFileName($app);
-                $this->log("Writing the key vault to {$server->Name}:$path");
-                $ssh->sudo('mkdir -p ' . escapeshellarg($dir));
-                if (!$ssh->test('test -w ' . escapeshellarg($dir))) {
-                    throw new DeployException(
-                        "$dir is not writable by the deploy user on {$server->Name}. Re-run "
-                            . "prod/10-workspace.sh with this login as the deployer argument, and "
-                            . "reconnect so the new group membership applies.",
-                        'vault'
-                    );
-                }
-                // WRITTEN BESIDE THE VAULT AND RENAMED OVER IT, never deleted first. The installer
-                // writes a placeholder vault (prod/install.sh step 4) so the box can boot before
-                // the real secrets arrive; removing it to make room means a transfer that then
-                // fails leaves the box with NO vault at all, and the next build dies on a missing
-                // file instead of on the push that actually broke. A rename is atomic, so the path
-                // holds either the old file or the new one and never a half-written one.
-                //
-                // 0600 on the temporary file: it holds every production credential and must not be
-                // readable by anyone else even for the moment it sits beside the real one. The
-                // rename carries that mode across, and the vault is a build-time input read by
-                // this same login (`getVaultKeys` in configs/build.php) — the runtime never reads
-                // it, only the generated configs/app.php inside the release.
-                //
-                // writeFile() counts the bytes on the far side and throws if they do not match, so
-                // a truncated transfer cannot reach the rename below. It used to be able to: the
-                // old SCP transport wrote a 0-byte file and reported success (see writeFile()).
-                $incoming = $path . '.incoming';
-                try {
-                    $ssh->writeFile($incoming, $app->KeyVault, 0600);
-                } catch (Throwable $e) {
-                    // The redirection creates the destination before the transfer can fail, so a
-                    // refused or truncated write leaves a zero-length or partial file behind.
-                    // Harmless where it is, but it is still a secrets file — do not leave it in the
-                    // vault directory.
-                    $ssh->sudo('rm -f ' . escapeshellarg($incoming), enforce: false);
-                    throw $e;
-                }
-                $ssh->sudo('mv -f ' . escapeshellarg($incoming) . ' ' . escapeshellarg($path));
-
-                // Group-readable, group inherited from the vault directory (www-data, per
-                // prod/10-workspace.sh). NOT cosmetic: the file lands owned by this login, and a
-                // later `chown -R www-data` — which prod/install.sh does to the whole workspace on
-                // every run — turns a 0600 file into one this login can no longer read. The build
-                // then reports the vault as missing, the vault is pushed again, and the next
-                // install.sh run breaks it again. At 0660 with the app's group, either owner can
-                // read it whichever way the last chown went, and "other" still gets nothing.
-                $ssh->sudo('chgrp --reference=' . escapeshellarg($dir) . ' ' . escapeshellarg($path), enforce: false);
-                $normalized = $ssh->sudo('chmod 660 ' . escapeshellarg($path), enforce: false);
-                if (!$normalized->ok()) {
-                    $this->log("WARNING: could not set 0660 on $path — if it is not readable by both the "
-                        . 'deploy login and the app user, a later chown will lock one of them out.');
-                }
-
-                // Verify the FINAL path, after the rename and the mode changes — writeFile() already
-                // counted the bytes at the incoming path, and this is the file the build will open.
-                // A short file here is not an error anywhere: it is a file, and every later step
-                // reads it as "the vault".
-                $written = (int) trim($ssh->read('wc -c < ' . escapeshellarg($path)));
-                $expectedBytes = strlen($app->KeyVault);
-                if ($written !== $expectedBytes) {
-                    throw new DeployException(
-                        "The key vault on {$server->Name} is $written bytes but should be $expectedBytes — "
-                            . 'the transfer was truncated. The file at ' . $path . ' is NOT usable; push again.',
-                        'vault'
-                    );
-                }
-                $this->log("Wrote $written bytes to {$server->Name}:$path");
+                $this->writeVault($ssh, $app, $server);
                 $record->IsSuccessful = true;
             } catch (Throwable $e) {
                 $record->IsSuccessful = false;
@@ -309,6 +244,291 @@ class DeploymentService
             $records[] = $record;
         }
         return $records;
+    }
+
+    /**
+     * "Set up": everything a fresh box needs before the ordinary Deploy can take over, done as
+     * the first deploy. Per server, in order, each step safe to run again after a failure:
+     *
+     *  1. Check (ServerInspector): refuse when anything is missing, in the way or unknown.
+     *  2. Workspace (prod/10-workspace.sh): folders, owner, the deploy login in the owner's group.
+     *     Reconnect, so that membership applies.
+     *  3. Key vault, as Push vault does.
+     *  4. PostgreSQL: role, database, `_verify` database, citext.
+     *  5. First release into the first slot: clone, build, claim the Redis db index, migrate.
+     *  6. Units (`php fluffy service`) after checking the release names the deploy admin's units,
+     *     upstream and user; start the slot, wait until healthy, the verify suite if asked for.
+     *  7. Web server (`php fluffy nginx`), tested and rolled back if it breaks the config, then
+     *     proven to route to the app through 127.0.0.1.
+     *  8. Enable the slot at boot, write the live colour (last, so a failed run can run again),
+     *     record the live slot on the application.
+     *
+     * Refuses on a box where the application is already set up (it has a live colour): from then
+     * on it is Deploy's job. The certificate is NOT issued here (Let's Encrypt limits failed
+     * attempts); the vhost starts on the self-signed pair.
+     *
+     * @return DeploymentHistoryEntity[]
+     */
+    public function setup(int $applicationId, array $context = []): array
+    {
+        $this->assertEnabled();
+        $app = $this->requireApplication($applicationId);
+        if (!$this->isRotating($app)) {
+            throw new DeployException('Set up is built for the rotate (blue/green) strategy.', 'preflight');
+        }
+        $source = $this->requireSource($app);
+        $services = $this->servicesFor($applicationId);
+        $upstreams = $this->upstreamsFor($applicationId);
+        $this->assertRotatable($app, $services, $upstreams);
+        if (count($upstreams) !== 1) {
+            throw new DeployException("Set up handles one upstream (`php fluffy nginx` writes one); '{$app->Name}' has " . count($upstreams) . '.', 'preflight');
+        }
+        $builderConf = '/etc/nginx/conf.d/10-upstream-' . $upstreams[0]->Name . '.conf';
+        if ($upstreams[0]->confPath() !== $builderConf) {
+            throw new DeployException("The upstream's file is set to {$upstreams[0]->confPath()}, but `php fluffy nginx` writes $builderConf: clear the custom path or set the box up by hand.", 'preflight');
+        }
+        $domain = strtolower(trim((string) $app->Domain));
+        if (!preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain)) {
+            throw new DeployException("The application's domain '{$app->Domain}' is not a host name.", 'preflight');
+        }
+        $slots = $this->slots($services);
+        $vault = json_decode((string) $app->KeyVault, true);
+        if (!is_array($vault) || $vault === []) {
+            throw new DeployException("The application's key vault is empty or not JSON.", 'preflight');
+        }
+        $records = [];
+        foreach ($this->serversFor($applicationId) as $link) {
+            $server = $link->Server;
+            $record = $this->startRecord($app, $server, $source, 'setup', $context);
+            $ssh = null;
+            $locked = null;
+            try {
+                $ssh = $this->connect($app, $source, $server);
+                $base = $this->baseFolder($app);
+                $to = $slots[0];
+                $record->ToSlot = $to;
+
+                $this->log('== step 1/8: check');
+                $findings = $this->inspector->inspect(
+                    $ssh, $app, $source, $server, $services, $upstreams, $vault,
+                    $base, $this->vaultDir($app) . '/' . $this->vaultFileName($app),
+                    fn(string $line) => $this->log($line)
+                );
+                $blockers = ServerInspector::blockers($findings);
+                if ($blockers !== []) {
+                    throw new DeployException('Not ready: ' . implode('; ', array_map(fn($f) => "{$f['group']}: {$f['label']} ({$f['detail']})", $blockers)), 'preflight');
+                }
+                // The live colour is written only at the very end, so its presence means a finished
+                // set up: from then on it is Deploy's job. A run that failed half way can run again.
+                if ($ssh->test('test -f ' . escapeshellarg($base . '/live-color'))) {
+                    throw new DeployException('The application is already set up on this box (it has a live colour): use Deploy.', 'preflight');
+                }
+                // One Set up per application and box at a time (two tabs, a double confirm).
+                $lock = '/run/lock/saaspaws-setup-' . ServerProvisioner::slug((string) $app->Name);
+                if (!$ssh->sudo('mkdir ' . escapeshellarg($lock), false, 15)->ok()) {
+                    throw new DeployException("Another Set up of {$app->Name} is running on this box ($lock exists; remove it if none is).", 'preflight');
+                }
+                $locked = $lock;
+
+                $this->log('== step 2/8: workspace');
+                $login = (string) $server->UserName;
+                $this->provisioner->workspace($ssh, $base, self::APP_USER, $login !== 'root' ? $login : null);
+                $ssh->dispose();
+                $ssh = $this->connect($app, $source, $server); // the new group applies to new logins only
+                $rotator = new BlueGreenRotator($ssh);
+
+                $this->log('== step 3/8: key vault');
+                $this->writeVault($ssh, $app, $server);
+
+                $this->log('== step 4/8: PostgreSQL');
+                $this->provisioner->postgres($ssh, $vault, (string) $app->Name);
+
+                $this->log("== step 5/8: first release into '$to'");
+                $release = $this->slotFolder($app, $to);
+                $staging = $release . '_staging';
+                $this->fetch($record, $app, $source, $ssh, $staging);
+                $this->build($app, $source, $ssh, $staging);
+                $this->swap($ssh, $staging, $release);
+                $this->provisioner->assertSnippet($ssh, $release);
+                $this->provisioner->redis($ssh, $release, (string) $app->Name);
+                $this->migrate($ssh, $release);
+
+                $this->log("== step 6/8: units, start '$to'");
+                $this->assertReleaseMatches($ssh, $release, $services, $upstreams);
+                $unitNames = array_map(fn($service) => preg_replace('/\.service$/', '', (string) $service->Name), $services);
+                $this->provisioner->units($ssh, $release, $base, $unitNames);
+                foreach ($this->slotServices($services, $to) as $service) {
+                    $rotator->restartUnit($service->Name);
+                }
+                $port = 0;
+                foreach ($this->slotServices($services, $to) as $service) {
+                    if ($service->UpstreamId !== null) {
+                        $rotator->waitHealthy($service->Name, $service->Port, $app->HealthPath ?: '/health', 90);
+                        $this->log("{$service->Name} is healthy on port {$service->Port}");
+                        $port = (int) $service->Port;
+                    }
+                }
+                $this->verifySlot($app, $ssh, $release, $this->slotServices($services, $to));
+
+                $this->log('== step 7/8: web server');
+                $this->provisioner->edge($ssh, $release, $base, $domain, array_map(fn($u) => $u->confPath(), $upstreams), $port);
+                $serving = $this->liveSlot($rotator, $services, $upstreams);
+                if ($serving !== $to) {
+                    throw new DeployException("The upstream points at '" . ($serving ?? 'nothing') . "', not at '$to' which was just started.", 'edge');
+                }
+
+                $this->log('== step 8/8: live');
+                $this->provisioner->enable($ssh, array_map(fn($service) => (string) $service->Name, $this->slotServices($services, $to)));
+                $rotator->writeLiveMarker($base, $to);
+                $app->LiveSlot = $to;
+                $app->LiveCommitSha = $record->CommitSha;
+                $app->LastDeployedOn = DeploymentHistoryRepository::getTime();
+                $this->applications->update($app, ['LiveSlot', 'LiveCommitSha', 'LastDeployedOn']);
+                $this->log("Set up on {$server->Name}: '$to' serves https://{$app->Domain} on the self-signed certificate. Next: Issue certificate.");
+                $record->IsSuccessful = true;
+            } catch (Throwable $e) {
+                $record->IsSuccessful = false;
+                $record->Error = $e->getMessage();
+                $this->log('FAILED: ' . $e->getMessage());
+                $this->unlock($ssh, $locked);
+                $this->finish($record, $ssh);
+                throw $e;
+            }
+            $this->unlock($ssh, $locked);
+            $this->finish($record, $ssh);
+            $records[] = $record;
+        }
+        return $records;
+    }
+
+    private function unlock(?SshService $ssh, ?string $lock): void
+    {
+        if ($ssh !== null && $lock !== null) {
+            try {
+                $ssh->sudo('rmdir ' . escapeshellarg($lock), false, 15);
+            } catch (Throwable) {
+                // the connection is gone; the next run says how to clear it
+            }
+        }
+    }
+
+    /**
+     * The release's configs/server.php names the units, their ports and the upstream that Fluffy's
+     * builders will write as root; they must be the deploy admin's, or a builder would overwrite
+     * another application's unit or point our vhost at someone else's upstream.
+     *
+     * @param DeployServiceEntity[] $services
+     * @param DeployUpstreamEntity[] $upstreams
+     */
+    private function assertReleaseMatches(SshService $ssh, string $release, array $services, array $upstreams): void
+    {
+        $config = $this->provisioner->releaseConfig($ssh, $release);
+        $problems = [];
+        $extra = array_diff(array_keys($config['instances']), $this->slots($services));
+        if ($extra !== []) {
+            // `php fluffy service` writes a unit for EVERY instance, as root.
+            $problems[] = 'configs/server.php has instances the deploy admin does not: ' . implode(', ', $extra);
+        }
+        foreach ($services as $service) {
+            $slot = $this->slotOf($service);
+            if ($slot === null) {
+                continue;
+            }
+            $instance = $config['instances'][$slot] ?? null;
+            $name = preg_replace('/\.service$/', '', (string) $service->Name);
+            if ($instance === null) {
+                $problems[] = "no '$slot' instance in configs/server.php";
+            } elseif (preg_replace('/\.service$/', '', $instance['service']) !== $name || $instance['port'] !== (int) $service->Port) {
+                $problems[] = "'$slot' is {$instance['service']}:{$instance['port']} in configs/server.php but $name:{$service->Port} here";
+            }
+        }
+        if ($config['user'] !== self::APP_USER) {
+            $problems[] = "the units would run as '" . ($config['user'] ?? 'nobody named') . "' (service_user), not " . self::APP_USER;
+        }
+        $upstream = $upstreams[0]->Name ?? null;
+        if ($config['upstream'] !== $upstream) {
+            $problems[] = "the upstream is '" . ($config['upstream'] ?? 'none') . "' in configs/server.php but '$upstream' here";
+        }
+        if ($problems !== []) {
+            throw new DeployException('The release and the deploy admin disagree: ' . implode('; ', $problems) . '.', 'units');
+        }
+    }
+
+    /**
+     * Writes the application's key vault to one server (Push vault, and step 3 of Set up): beside
+     * the vault, then renamed over it, checked byte for byte; the reasons are with each step below.
+     */
+    private function writeVault(SshService $ssh, DeployApplicationEntity $app, DeployServerEntity $server): void
+    {
+        $dir = $this->vaultDir($app);
+        $path = $dir . '/' . $this->vaultFileName($app);
+        $this->log("Writing the key vault to {$server->Name}:$path");
+        $ssh->sudo('mkdir -p ' . escapeshellarg($dir));
+        if (!$ssh->test('test -w ' . escapeshellarg($dir))) {
+            throw new DeployException(
+                "$dir is not writable by the deploy user on {$server->Name}. Re-run "
+                    . "prod/10-workspace.sh with this login as the deployer argument, and "
+                    . "reconnect so the new group membership applies.",
+                'vault'
+            );
+        }
+        // WRITTEN BESIDE THE VAULT AND RENAMED OVER IT, never deleted first. The installer
+        // writes a placeholder vault (prod/install.sh step 4) so the box can boot before
+        // the real secrets arrive; removing it to make room means a transfer that then
+        // fails leaves the box with NO vault at all, and the next build dies on a missing
+        // file instead of on the push that actually broke. A rename is atomic, so the path
+        // holds either the old file or the new one and never a half-written one.
+        //
+        // 0600 on the temporary file: it holds every production credential and must not be
+        // readable by anyone else even for the moment it sits beside the real one. The
+        // rename carries that mode across, and the vault is a build-time input read by
+        // this same login (`getVaultKeys` in configs/build.php): the runtime never reads
+        // it, only the generated configs/app.php inside the release.
+        //
+        // writeFile() counts the bytes on the far side and throws if they do not match, so
+        // a truncated transfer cannot reach the rename below. It used to be able to: the
+        // old SCP transport wrote a 0-byte file and reported success (see writeFile()).
+        $incoming = $path . '.incoming';
+        try {
+            $ssh->writeFile($incoming, $app->KeyVault, 0600);
+        } catch (Throwable $e) {
+            // The redirection creates the destination before the transfer can fail, so a
+            // refused or truncated write leaves a zero-length or partial file behind.
+            // Harmless where it is, but it is still a secrets file, so do not leave it in the
+            // vault directory.
+            $ssh->sudo('rm -f ' . escapeshellarg($incoming), enforce: false);
+            throw $e;
+        }
+        $ssh->sudo('mv -f ' . escapeshellarg($incoming) . ' ' . escapeshellarg($path));
+
+        // Group-readable, group inherited from the vault directory (www-data, per
+        // prod/10-workspace.sh). NOT cosmetic: the file lands owned by this login, and a
+        // later `chown -R www-data` (which prod/install.sh does to the whole workspace on
+        // every run) turns a 0600 file into one this login can no longer read. The build
+        // then reports the vault as missing, the vault is pushed again, and the next
+        // install.sh run breaks it again. At 0660 with the app's group, either owner can
+        // read it whichever way the last chown went, and "other" still gets nothing.
+        $ssh->sudo('chgrp --reference=' . escapeshellarg($dir) . ' ' . escapeshellarg($path), enforce: false);
+        $normalized = $ssh->sudo('chmod 660 ' . escapeshellarg($path), enforce: false);
+        if (!$normalized->ok()) {
+            $this->log("WARNING: could not set 0660 on $path: if it is not readable by both the "
+                . 'deploy login and the app user, a later chown will lock one of them out.');
+        }
+
+        // Verify the FINAL path, after the rename and the mode changes: writeFile() already
+        // counted the bytes at the incoming path, and this is the file the build will open.
+        // A short file here is not an error anywhere: it is a file, and every later step
+        // reads it as "the vault".
+        $written = (int) trim($ssh->read('wc -c < ' . escapeshellarg($path)));
+        $expectedBytes = strlen($app->KeyVault);
+        if ($written !== $expectedBytes) {
+            throw new DeployException(
+                "The key vault on {$server->Name} is $written bytes but should be $expectedBytes: "
+                    . 'the transfer was truncated. The file at ' . $path . ' is NOT usable; push again.',
+                'vault'
+            );
+        }
+        $this->log("Wrote $written bytes to {$server->Name}:$path");
     }
 
     // ------------------------------------------------------------------ one server
@@ -626,6 +846,18 @@ class DeploymentService
             throw $e;
         }
 
+        // The site answers through the edge: from now on only this slot starts at boot. Not
+        // earlier, or a rotation that was rolled back would leave the broken slot as the one a
+        // reboot brings up.
+        foreach ($this->slotServices($services, $to) as $service) {
+            $ssh->sudo('systemctl enable ' . escapeshellarg((string) $service->Name), false, 60);
+        }
+        if ($from !== null && $from !== $to) {
+            foreach ($this->slotServices($services, $from) as $service) {
+                $ssh->sudo('systemctl disable ' . escapeshellarg((string) $service->Name), false, 60);
+            }
+        }
+
         // Services with no slot (a worker, a queue consumer) run from wherever they were
         // installed and simply want the new code; they are restarted once traffic has moved so a
         // failed rotation does not disturb them.
@@ -774,6 +1006,11 @@ class DeploymentService
                 . escapeshellarg($this->repoUrl($source)) . ' ' . escapeshellarg($staging),
             timeout: 600
         );
+        // The clone keeps its URL in .git/config, token included, readable by the app's user once
+        // the release is chowned to it. Nothing later needs it: put the plain URL back.
+        if (!$ssh->exec('cd ' . escapeshellarg($staging) . ' && git remote set-url origin ' . escapeshellarg((string) $source->GitRepository), false)->ok()) {
+            $this->log("WARNING: could not take the token out of $staging/.git/config: remove it by hand.");
+        }
         $record->CommitSha = $ssh->read('cd ' . escapeshellarg($staging) . ' && git rev-parse HEAD');
         $record->CommitMessage = substr(
             $ssh->read('cd ' . escapeshellarg($staging) . ' && git log -1 --pretty=%s'),
@@ -1065,6 +1302,9 @@ class DeploymentService
 
     // ------------------------------------------------------------------ vault
 
+    /** The user the app's units run as and owns its workspace (configs/server.php `service_user`; swap() chowns to it). */
+    private const APP_USER = 'www-data';
+
     /**
      * Keys the build refuses to run without. Mirrors `$requiredVaultKeys` in configs/build.php —
      * checked here as well so the deploy fails at the preflight, with a message about the vault,
@@ -1246,6 +1486,24 @@ class DeploymentService
         $ssh->addSecret($app->KeyVault);
         $ssh->addSecret($server->FileKeyPassphrase);
         $ssh->addSecret($server->Password);
+        // The secret values too: a password echoed on its own (a failing psql) is not the whole
+        // document. ONLY secrets: masking is applied to the output the code parses as well, so a
+        // plain value (a database name, 127.0.0.1) masked there would turn paths and upstream ports
+        // into stars.
+        $values = $app->KeyVault !== null ? json_decode($app->KeyVault, true) : null;
+        if (is_array($values)) {
+            $walk = function (array $node) use (&$walk, $ssh) {
+                foreach ($node as $key => $value) {
+                    if (is_array($value)) {
+                        $walk($value);
+                    } elseif (is_string($value) && strlen($value) >= 6
+                        && preg_match('/pass|secret|salt|token|_key$|auth|private/i', (string) $key)) {
+                        $ssh->addSecret($value);
+                    }
+                }
+            };
+            $walk($values);
+        }
         $ssh->connect(
             new SshCredentials(
                 host: (string) $server->Host,
