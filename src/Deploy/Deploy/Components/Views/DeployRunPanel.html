@@ -9,6 +9,9 @@
         <button type="button" class="btn btn-outline-secondary" disabled="{$running}" (click)="askVault()">
             <Icon name="bi-safe" /> Push key vault
         </button>
+        <button type="button" class="btn btn-outline-secondary" disabled="{$running}" (click)="askCheck()">
+            <Icon name="bi-clipboard-check" /> Check server
+        </button>
         <span if="$running" class="text-muted small">
             <span class="spinner-border spinner-border-sm me-1"></span> running…
         </span>

@@ -32,6 +32,7 @@ use SaasPaws\Deploy\Deploy\Data\Repositories\DeploySourceRepository;
 use SaasPaws\Deploy\Deploy\Data\Repositories\DeployUpstreamRepository;
 use SaasPaws\Deploy\Deploy\Services\DeployLogBuffer;
 use SaasPaws\Deploy\Deploy\Services\DeploymentService;
+use SaasPaws\Deploy\Deploy\Services\ServerInspector;
 use SaasPaws\Deploy\Deploy\Tasks\DeployRunTask;
 use SaasPaws\Deploy\LiveInstance\LiveInstanceService;
 use SaasPaws\Deploy\Migrations\MigrationsContext;
@@ -72,6 +73,7 @@ class DeployStartUp implements IStartUp
         // nothing else writes to it.
         if ($this->isDeployEnabled()) {
             $serviceProvider->addScoped(DeploymentService::class);
+            $serviceProvider->addScoped(ServerInspector::class);
             $serviceProvider->addScoped(DeployLogBuffer::class);
             // The task worker resolves this by class name out of a fresh scope: an unregistered
             // task is a run that dies in the worker with nothing in the log the page is tailing.

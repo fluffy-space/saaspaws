@@ -76,6 +76,15 @@ class DeployController extends BaseController
     }
 
     /**
+     * POST /api/admin/deploy/{id}/check — a read-only look at the application's servers
+     * (DeploymentService::check): prerequisites, what is already there, what is in the way.
+     */
+    public function Check(int $id)
+    {
+        return $this->start($id, 'check');
+    }
+
+    /**
      * GET /api/admin/deploy/run/{runId}/logs?offset=N — tail a run in flight.
      *
      * Offset-based so the page appends instead of re-fetching a growing blob every second.

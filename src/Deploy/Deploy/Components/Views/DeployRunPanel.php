@@ -28,7 +28,7 @@ class DeployRunPanel extends BaseComponent
 
     // --- confirmation ----------------------------------------------------------------
     public bool $showConfirm = false;
-    /** deploy | vault | restart */
+    /** deploy | vault | restart | check */
     public string $kind = 'deploy';
     public bool $starting = false;
     public string $error = '';
@@ -98,6 +98,18 @@ class DeployRunPanel extends BaseComponent
             . ' Nothing is built: the live release is copied into the idle slot and traffic rotates to it.'
             . ' An application on the restart strategy restarts in place, with a short outage.';
         $this->confirmLabel = 'restart';
+        $this->showConfirm = true;
+    }
+
+    /** Read-only: looks at the servers and reports, changes nothing (DeploymentService::check). */
+    public function askCheck()
+    {
+        $this->kind = 'check';
+        $this->error = '';
+        $this->confirmMessage = "Check every server of {$this->name}?"
+            . ' It only looks: prerequisites, what is already there, and what of other applications'
+            . ' is in the way. It changes no configuration and restarts nothing.';
+        $this->confirmLabel = 'check';
         $this->showConfirm = true;
     }
 
@@ -239,10 +251,10 @@ class DeployRunPanel extends BaseComponent
     public function outcomeText($row): string
     {
         if ($row['IsSuccessful'] === true) {
-            return 'ok';
+            return $row['Kind'] === 'check' ? 'ready' : 'ok';
         }
         if ($row['IsSuccessful'] === false) {
-            return 'failed';
+            return $row['Kind'] === 'check' ? 'not ready' : 'failed';
         }
         return 'running';
     }

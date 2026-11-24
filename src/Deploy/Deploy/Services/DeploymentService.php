@@ -64,6 +64,7 @@ class DeploymentService
         private DeployUpstreamRepository $upstreams,
         private DeploymentHistoryRepository $history,
         private Config $config,
+        private ServerInspector $inspector,
     ) {}
 
     public function onLog(?callable $callback): void
@@ -240,6 +241,69 @@ class DeploymentService
                 $this->log('FAILED: ' . $e->getMessage());
                 $this->finish($record, $ssh);
                 throw $e;
+            }
+            $this->finish($record, $ssh);
+            $records[] = $record;
+        }
+        return $records;
+    }
+
+    /**
+     * "Check server": a read-only look at every server of the application (ServerInspector) -
+     * prerequisites, what of this application is already there, and what of someone else's is in
+     * its way. Nothing on the box changes, so it is safe beside other live applications and can be
+     * run any time. A server counts as successful when nothing blocks setting the application up;
+     * the findings are in the record's log, one `[status] group: label - detail` line each.
+     *
+     * @return DeploymentHistoryEntity[]
+     */
+    public function check(int $applicationId, array $context = []): array
+    {
+        $this->assertEnabled();
+        $app = $this->requireApplication($applicationId);
+        /** @var ?DeploySourceEntity $source */
+        $source = $app->SourceId ? $this->sources->getById($app->SourceId) : null;
+        $services = $this->servicesFor($applicationId);
+        $upstreams = $this->upstreamsFor($applicationId);
+        $vault = $app->KeyVault !== null && trim($app->KeyVault) !== '' ? json_decode($app->KeyVault, true) : null;
+        $vault = is_array($vault) && $vault !== [] ? $vault : null;
+        $records = [];
+        foreach ($this->serversFor($applicationId) as $link) {
+            $server = $link->Server;
+            $record = $this->startRecord($app, $server, $source, 'check', $context);
+            $ssh = null;
+            try {
+                $ssh = $this->connect($app, $source, $server);
+                $findings = $this->inspector->inspect(
+                    $ssh,
+                    $app,
+                    $source,
+                    $server,
+                    $services,
+                    $upstreams,
+                    $vault,
+                    $this->baseFolder($app),
+                    $this->vaultDir($app) . '/' . $this->vaultFileName($app),
+                    fn(string $line) => $this->log($line)
+                );
+                $counts = array_count_values(array_column($findings, 'status'));
+                $summary = sprintf(
+                    '%d ok, %d missing, %d conflict, %d error, %d already there, %d warning',
+                    $counts[ServerInspector::OK] ?? 0,
+                    $counts[ServerInspector::MISSING] ?? 0,
+                    $counts[ServerInspector::CONFLICT] ?? 0,
+                    $counts[ServerInspector::ERROR] ?? 0,
+                    $counts[ServerInspector::EXISTS] ?? 0,
+                    $counts[ServerInspector::WARN] ?? 0
+                );
+                $ready = ServerInspector::ready($findings);
+                $this->log(($ready ? 'READY to set up: ' : 'NOT READY: ') . $summary);
+                $record->IsSuccessful = $ready;
+                $record->Error = $ready ? null : $summary;
+            } catch (Throwable $e) {
+                $record->IsSuccessful = false;
+                $record->Error = $e->getMessage();
+                $this->log('FAILED: ' . $e->getMessage());
             }
             $this->finish($record, $ssh);
             $records[] = $record;
@@ -1316,9 +1380,15 @@ class DeploymentService
         )['list'];
     }
 
+    /**
+     * A line of our own, always on a line of its own: command output that did not end in a newline
+     * would otherwise get this line glued to its end (and a long output line is cut short in the
+     * UI, taking the glued line with it).
+     */
     private function log(string $line): void
     {
-        $this->emit($line . "\n");
+        $start = $this->logs !== '' && !str_ends_with($this->logs, "\n") ? "\n" : '';
+        $this->emit($start . $line . "\n");
     }
 
     private function emit(string $chunk): void
