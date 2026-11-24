@@ -203,6 +203,72 @@ class ServerProvisioner
         }
     }
 
+    /**
+     * A Let's Encrypt certificate for $domain, then the vhost regenerated onto it (edge()).
+     *
+     * Webroot mode into the vhost's own `root` (the BUILT public copy: a token anywhere else is a
+     * 404, every renewal). Before Let's Encrypt is asked, the challenge path is proven with our own
+     * token fetched by the domain name from the box, so a broken path or DNS pointing elsewhere
+     * costs no failed validation (those are rate-limited). The reload on renewal is attached to
+     * THIS certificate (`--deploy-hook`, stored in its renewal file), not installed box-wide.
+     * An existing certificate is kept (`--keep-until-expiring`); the vhost is still regenerated.
+     */
+    public function certificate(SshService $ssh, string $release, string $base, string $domain, array $upstreamConfs, int $slotPort, string $email): void
+    {
+        $vhost = "/etc/nginx/sites-available/$domain";
+        $root = trim($ssh->exec('sed -n ' . escapeshellarg('s/^[[:space:]]*root[[:space:]]\+\([^;]*\);.*/\1/p') . ' ' . escapeshellarg($vhost) . ' | head -n 1', false, 15)->output);
+        if ($root === '' || !str_starts_with($root, '/')) {
+            throw new DeployException("No `root` in $vhost: run Set up first.", 'certificate');
+        }
+        $binary = $ssh->test('test -x ' . self::OPENRESTY) ? self::OPENRESTY : 'nginx';
+        $service = $binary === self::OPENRESTY ? 'openresty' : 'nginx';
+
+        // 1. Prove the challenge path ourselves: our token, served from the webroot, fetched by name.
+        $token = 'saaspaws-' . bin2hex(random_bytes(12));
+        $dir = rtrim($root, '/') . '/.well-known/acme-challenge';
+        $ssh->sudo('mkdir -p ' . escapeshellarg($dir));
+        $ssh->sudo('sh -c ' . escapeshellarg('printf %s ' . escapeshellarg($token) . ' > ' . escapeshellarg("$dir/$token")));
+        try {
+            $got = trim($ssh->exec('curl -s --max-time 10 ' . escapeshellarg("http://$domain/.well-known/acme-challenge/$token"), false, 20)->output);
+        } finally {
+            $ssh->sudo('rm -f ' . escapeshellarg("$dir/$token"), false, 15);
+        }
+        if ($got !== $token) {
+            throw new DeployException("http://$domain/.well-known/acme-challenge/ does not serve files from $root (DNS pointing elsewhere, or the vhost): Let's Encrypt was NOT asked.", 'certificate');
+        }
+        $this->log("The challenge path works: http://$domain/.well-known/acme-challenge/ serves $root");
+
+        // 2. Issue (or keep) the certificate.
+        $live = "/etc/letsencrypt/live/$domain";
+        if ($ssh->sudo('test -d ' . escapeshellarg($live), false, 15)->ok()) {
+            $this->log("A certificate for $domain is already there: kept");
+        } else {
+            $hasAccount = trim($ssh->sudo('sh -c ' . escapeshellarg('ls -A /etc/letsencrypt/accounts/*/directory/ 2>/dev/null | head -n 1'), false, 15)->output) !== '';
+            if (!$hasAccount && $email === '') {
+                throw new DeployException('The box has no Let\'s Encrypt account yet and the key vault names no admin email to register one with.', 'certificate');
+            }
+            $command = 'certbot certonly --non-interactive --agree-tos --keep-until-expiring --webroot'
+                . ' -w ' . escapeshellarg($root) . ' -d ' . escapeshellarg($domain) . ' --cert-name ' . escapeshellarg($domain)
+                . ' --deploy-hook ' . escapeshellarg("systemctl reload $service")
+                . ($hasAccount ? '' : ' -m ' . escapeshellarg($email) . ' --no-eff-email');
+            $issued = $ssh->sudo($command, false, 300);
+            if (!$issued->ok() || !$ssh->sudo('test -d ' . escapeshellarg($live), false, 15)->ok()) {
+                throw new DeployException("certbot did not issue a certificate for $domain: " . trim($issued->text()), 'certificate');
+            }
+            $this->log("Certificate issued for $domain (renewals reload $service)");
+        }
+
+        // 3. The vhost onto it, with the same backup, test and rollback as Set up.
+        $this->edge($ssh, $release, $base, $domain, $upstreamConfs, $slotPort);
+
+        // 4. Through the public name, certificate checked this time.
+        $code = trim($ssh->exec("curl -s -o /dev/null -w '%{http_code}' --max-time 10 " . escapeshellarg("https://$domain/health"), false, 20)->output);
+        if ($code !== '200') {
+            throw new DeployException("https://$domain/health answers $code with the certificate checked.", 'certificate');
+        }
+        $this->log("https://$domain/ is served with a valid certificate");
+    }
+
     /** Our vhost must not become a fallback: checked again with the RELEASE's template, after the build. */
     public function assertFallbacks(SshService $ssh, string $release, string $domain): void
     {

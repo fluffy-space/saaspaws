@@ -418,6 +418,60 @@ class DeploymentService
     }
 
     /**
+     * "Issue certificate": a Let's Encrypt certificate for the application's domain on every server,
+     * and the vhost switched onto it (ServerProvisioner::certificate). Only where Set up finished
+     * (a live colour): it regenerates the vhost from the LIVE release.
+     *
+     * @return DeploymentHistoryEntity[]
+     */
+    public function certificate(int $applicationId, array $context = []): array
+    {
+        $this->assertEnabled();
+        $app = $this->requireApplication($applicationId);
+        $services = $this->servicesFor($applicationId);
+        $upstreams = $this->upstreamsFor($applicationId);
+        $domain = strtolower(trim((string) $app->Domain));
+        if (!preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain)) {
+            throw new DeployException("The application's domain '{$app->Domain}' is not a host name.", 'preflight');
+        }
+        $vault = json_decode((string) $app->KeyVault, true);
+        $email = is_array($vault) ? (string) ($vault['ADMINS_ARRAY'][0]['Email'] ?? '') : '';
+        $records = [];
+        foreach ($this->serversFor($applicationId) as $link) {
+            $server = $link->Server;
+            $record = $this->startRecord($app, $server, null, 'certificate', $context);
+            $ssh = null;
+            try {
+                $ssh = $this->connect($app, null, $server);
+                $base = $this->baseFolder($app);
+                $slot = trim($ssh->exec('cat ' . escapeshellarg($base . '/live-color'), false, 15)->output);
+                if ($slot === '' || !in_array($slot, $this->slots($services), true)) {
+                    throw new DeployException('No live colour on this box: run Set up first.', 'preflight');
+                }
+                $release = $this->slotFolder($app, $slot);
+                $port = 0;
+                foreach ($this->slotServices($services, $slot) as $service) {
+                    if ($service->UpstreamId !== null) {
+                        $port = (int) $service->Port;
+                    }
+                }
+                $this->provisioner->assertSnippet($ssh, $release);
+                $this->provisioner->certificate($ssh, $release, $base, $domain, array_map(fn($u) => $u->confPath(), $upstreams), $port, $email);
+                $record->IsSuccessful = true;
+            } catch (Throwable $e) {
+                $record->IsSuccessful = false;
+                $record->Error = $e->getMessage();
+                $this->log('FAILED: ' . $e->getMessage());
+                $this->finish($record, $ssh);
+                throw $e;
+            }
+            $this->finish($record, $ssh);
+            $records[] = $record;
+        }
+        return $records;
+    }
+
+    /**
      * The release's configs/server.php names the units, their ports and the upstream that Fluffy's
      * builders will write as root; they must be the deploy admin's, or a builder would overwrite
      * another application's unit or point our vhost at someone else's upstream.
@@ -954,8 +1008,8 @@ class DeploymentService
 
         if ($result->exitCode !== 0) {
             throw new DeployException(
-                "The new slot failed verification ({$result->exitCode} failing checks) — traffic was NOT moved, "
-                    . "'{$app->Name}' is still served by the slot that was already live.",
+                "The new slot failed verification ({$result->exitCode} failing checks): traffic was NOT moved; "
+                    . "whatever served '{$app->Name}' before (nothing, on a fresh Set up) still does.",
                 'verify'
             );
         }

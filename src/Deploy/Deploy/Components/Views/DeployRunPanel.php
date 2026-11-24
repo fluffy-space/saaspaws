@@ -28,7 +28,7 @@ class DeployRunPanel extends BaseComponent
 
     // --- confirmation ----------------------------------------------------------------
     public bool $showConfirm = false;
-    /** deploy | vault | restart | check | setup */
+    /** deploy | vault | restart | check | setup | certificate */
     public string $kind = 'deploy';
     public bool $starting = false;
     public string $error = '';
@@ -125,6 +125,19 @@ class DeployRunPanel extends BaseComponent
             . ' sites on the box are not touched; a vhost that breaks the web server config is removed'
             . ' again. It refuses where the application already runs: use Deploy there.';
         $this->confirmLabel = 'set it up';
+        $this->showConfirm = true;
+    }
+
+    /** After Set up: Let's Encrypt for the domain, then the vhost onto it. */
+    public function askCertificate()
+    {
+        $this->kind = 'certificate';
+        $this->error = '';
+        $this->confirmMessage = "Issue a Let's Encrypt certificate for {$this->name}'s domain on every server?"
+            . ' It first proves the challenge path with its own token (DNS and the vhost), so a broken'
+            . ' setup costs no failed attempt; then it issues, switches the vhost to the certificate and'
+            . ' checks the site over https. An existing certificate is kept.';
+        $this->confirmLabel = 'issue it';
         $this->showConfirm = true;
     }
 

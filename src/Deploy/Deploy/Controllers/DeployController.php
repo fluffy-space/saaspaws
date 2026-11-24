@@ -93,6 +93,12 @@ class DeployController extends BaseController
         return $this->start($id, 'setup');
     }
 
+    /** POST /api/admin/deploy/{id}/certificate: a Let's Encrypt certificate and the vhost onto it. */
+    public function Certificate(int $id)
+    {
+        return $this->start($id, 'certificate');
+    }
+
     /**
      * GET /api/admin/deploy/run/{runId}/logs?offset=N — tail a run in flight.
      *

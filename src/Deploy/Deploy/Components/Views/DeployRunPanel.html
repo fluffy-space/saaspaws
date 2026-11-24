@@ -15,6 +15,9 @@
         <button type="button" class="btn btn-outline-secondary" disabled="{$running}" (click)="askSetup()">
             <Icon name="bi-hammer" /> Set up
         </button>
+        <button type="button" class="btn btn-outline-secondary" disabled="{$running}" (click)="askCertificate()">
+            <Icon name="bi-shield-lock" /> Issue certificate
+        </button>
         <span if="$running" class="text-muted small">
             <span class="spinner-border spinner-border-sm me-1"></span> running…
         </span>
