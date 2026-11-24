@@ -253,7 +253,8 @@ class ServerInspector
             $this->add(self::WARN, 'postgresql', 'server', 'cannot look without sudo');
             return;
         }
-        $q = fn(string $sql, string $db = 'postgres') => $ssh->sudo('runuser -u postgres -- psql -d ' . escapeshellarg($db) . ' -tAc ' . escapeshellarg($sql), false, 30);
+        $pgPort = (int) ($vault['PG_PORT'] ?? 5432) ?: 5432;
+        $q = fn(string $sql, string $db = 'postgres') => $ssh->sudo('runuser -u postgres -- psql -X -p ' . $pgPort . ' -d ' . escapeshellarg($db) . ' -tAc ' . escapeshellarg($sql), false, 30);
         $server = $q('SHOW server_version');
         if (!$server->ok()) {
             $this->add(self::MISSING, 'postgresql', 'server', 'not answering: ' . $this->first($server->text()));
@@ -325,8 +326,15 @@ class ServerInspector
 
     private function workspace(SshService $ssh, DeployApplicationEntity $app, string $baseFolder, string $vaultPath, ?array $vault): void
     {
-        if ($ssh->test('test -d ' . escapeshellarg($baseFolder))) {
-            $entries = array_values(array_filter(explode("\n", $this->read($ssh, 'ls -1A ' . escapeshellarg($baseFolder) . ' 2>/dev/null'))));
+        $isDir = $this->sudo ? $ssh->sudo('test -d ' . escapeshellarg($baseFolder), false, 15)->ok() : $ssh->test('test -d ' . escapeshellarg($baseFolder));
+        if ($isDir) {
+            // As root: a folder the login cannot read would otherwise look empty.
+            $list = $this->sudo ? $ssh->sudo('ls -1A ' . escapeshellarg($baseFolder), false, 15) : $ssh->exec('ls -1A ' . escapeshellarg($baseFolder), false, 15);
+            if (!$list->ok()) {
+                $this->add(self::ERROR, 'workspace', $baseFolder, 'exists but cannot be listed: ' . $this->first($list->text()));
+                return;
+            }
+            $entries = array_values(array_filter(explode("\n", trim($list->output))));
             $foreign = array_values(array_diff($entries, self::LAYOUT));
             if ($foreign !== []) {
                 // A shared parent (/var/www, /workspace): Set up would chown and chmod it.
@@ -415,7 +423,7 @@ class ServerInspector
         // answer other sites' visitors. Read from the config nginx actually loads (`-T`).
         $domainName = trim((string) $app->Domain);
         if ($domainName !== '' && $this->sudo) {
-            $dump = $ssh->sudo($binary . ' -T', false, 60);
+            $dump = self::loadedConfig($ssh, $binary);
             $template = class_exists(InstalledVersions::class) ? InstalledVersions::getInstallPath('fluffy-space/fluffy') . '/bin/setup/nginx.conf' : '';
             $ourListens = is_file($template) ? self::listensIn((string) file_get_contents($template)) : ['443', '[::]:443', '80', '[::]:80'];
             if (!$dump->ok()) {
@@ -514,6 +522,20 @@ class ServerInspector
             : 'NOT reachable from the box (firewall, egress): alerts and incident emails would not send');
     }
 
+    /**
+     * `nginx -T`, reduced ON THE BOX to what fallbacks() reads: the "# configuration file" lines,
+     * `server` and `listen` lines and the braces of everything else. The full dump is every site's
+     * config (other applications' vhosts, their headers and paths): it must not reach our logs.
+     */
+    public static function loadedConfig(SshService $ssh, string $binary): \SaasPaws\Deploy\Ssh\SshResult
+    {
+        $awk = '/^# configuration file / { print; next } '
+            . '{ line = $0; sub(/#.*/, "", line) } '
+            . 'line ~ /^[[:space:]]*(server|listen)[[:space:];{]/ { print line; next } '
+            . 'line ~ /[{}]/ { b = line; gsub(/[^{}]/, "", b); print b }';
+        return $ssh->sudo('sh -c ' . escapeshellarg($binary . ' -T 2>/dev/null | awk ' . escapeshellarg($awk)), false, 60);
+    }
+
     /** The sockets the `listen` lines of a config text open, normalised ("*:443", "[::]:443"). @return string[] */
     public static function listensIn(string $config): array
     {
@@ -552,12 +574,16 @@ class ServerInspector
     public static function fallbacks(string $dump, string $ours, array $ourSockets): array
     {
         $blocks = [];
+        $files = [];
         $file = '';
         $depth = 0;
         $current = null;
         foreach (preg_split('/\R/', $dump) as $raw) {
             if (preg_match('/^# configuration file (.+):$/', $raw, $m)) {
                 $file = $m[1];
+                if ($file !== $ours) {
+                    $files[] = $file;
+                }
                 $depth = 0;
                 $current = null;
                 continue;
@@ -588,7 +614,24 @@ class ServerInspector
                 continue;
             }
             $first = $there[0]['file'];
-            $oursFirst = dirname($first) === dirname($ours) && strcmp(basename($ours), basename($first)) < 0;
+            // Where our file would be read: among its directory's files in the order nginx reads
+            // them (alphabetical within the glob), placed in the dump's file order. Unknown when
+            // nginx reads nothing from that directory: then it is not safe to say.
+            $order = $files;
+            $siblings = array_values(array_filter($order, fn($f) => dirname($f) === dirname($ours)));
+            if ($siblings === []) {
+                $result[$socket] = [false, 'no default_server, and nothing else is read from ' . dirname($ours) . ': cannot tell whether ours would come before ' . $first];
+                continue;
+            }
+            $at = null;
+            foreach ($siblings as $sibling) {
+                if (strcmp(basename($ours), basename($sibling)) < 0) {
+                    $at = array_search($sibling, $order, true);
+                    break;
+                }
+            }
+            $at ??= array_search(end($siblings), $order, true) + 0.5;
+            $oursFirst = $at <= array_search($first, $order, true);
             $result[$socket] = $oursFirst
                 ? [false, "no default_server, and ours would be read before $first: it would answer unknown host names"]
                 : [true, "no default_server; the fallback stays $first"];

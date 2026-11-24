@@ -126,7 +126,13 @@ class BlueGreenRotator
             // left alone: these files are hand-editable and may carry keepalive tuning. Written to a
             // temporary file by the login, then copied over the conf as root.
             $staged = '/tmp/' . basename($move['conf']) . '.rotate-' . bin2hex(random_bytes(4));
-            $this->ssh->writeFile($staged, self::moveTo($this->ssh->read('cat ' . $conf), (int) $move['port']), 0644);
+            $current = $this->ssh->read('cat ' . $conf);
+            if (str_contains($current, '******')) {
+                // What came back was masked (a secret value appears in the file): writing it back
+                // would put the stars into the live config.
+                throw new DeployException("{$move['conf']} reads back masked; repoint it by hand.", 'rotate');
+            }
+            $this->ssh->writeFile($staged, self::moveTo($current, (int) $move['port']), 0644);
             $this->ssh->sudo('cp -f ' . escapeshellarg($staged) . " $conf");
             $this->ssh->exec('rm -f ' . escapeshellarg($staged), false);
         }

@@ -43,8 +43,13 @@ class ServerProvisioner
      */
     public function workspace(SshService $ssh, string $base, string $owner, ?string $deployer): void
     {
-        if ($ssh->test('test -d ' . escapeshellarg($base))) {
-            $entries = array_values(array_filter(explode("\n", trim($ssh->exec('ls -1A ' . escapeshellarg($base), false, 15)->output))));
+        if ($ssh->sudo('test -d ' . escapeshellarg($base), false, 15)->ok()) {
+            // As root: a folder the login cannot read would otherwise look empty and be chowned.
+            $list = $ssh->sudo('ls -1A ' . escapeshellarg($base), false, 15);
+            if (!$list->ok()) {
+                throw new DeployException("$base exists but cannot be listed: not touching it.", 'workspace');
+            }
+            $entries = array_values(array_filter(explode("\n", trim($list->output))));
             $foreign = array_values(array_diff($entries, ServerInspector::LAYOUT));
             if ($foreign !== []) {
                 throw new DeployException("$base holds more than this application's layout (" . implode(', ', $foreign) . '): not touching it.', 'workspace');
@@ -125,7 +130,7 @@ class ServerProvisioner
         if ($hasRole) {
             // An existing role is NEVER altered: if it is someone else's, changing its password
             // takes that application down. It is ours only if the vault's password logs in.
-            $this->assertLogin($ssh, $role, $password, $port);
+            $this->assertLogin($ssh, $role, $password, $port, $db, false);
         }
 
         // The role's password goes in as a SCRAM verifier made here: the plain text reaches neither
@@ -148,7 +153,7 @@ class ServerProvisioner
         } finally {
             $ssh->exec('rm -f ' . escapeshellarg($file), false, 15);
         }
-        $this->assertLogin($ssh, $role, $password, $port);
+        $this->assertLogin($ssh, $role, $password, $port, $db, true);
         $this->log("PostgreSQL: role $role, databases $db and $verify (citext), marked $comment; the vault's password logs in");
     }
 
@@ -156,19 +161,21 @@ class ServerProvisioner
      * Logs in as $role over TCP with the vault's password, the way the app will. The password goes
      * through a 0600 PGPASSFILE in RAM, never through argv or the environment of a command line.
      */
-    private function assertLogin(SshService $ssh, string $role, string $password, int $port): void
+    private function assertLogin(SshService $ssh, string $role, string $password, int $port, string $db, bool $created): void
     {
         $line = '127.0.0.1:' . $port . ':*:' . $role . ':' . str_replace([':', '\\'], ['\\:', '\\\\'], $password) . "\n";
         $dir = $ssh->test('test -d /dev/shm -a -w /dev/shm') ? '/dev/shm' : '/tmp';
         $file = $dir . '/saaspaws-pgpass-' . bin2hex(random_bytes(6));
         try {
             $ssh->writeFile($file, $line, 0600);
-            $ok = $ssh->exec('PGPASSFILE=' . escapeshellarg($file) . ' psql -X -w -h 127.0.0.1 -p ' . $port . ' -U ' . escapeshellarg($role) . ' -d postgres -tAc ' . escapeshellarg('SELECT 1'), false, 30);
+            $ok = $ssh->exec('PGPASSFILE=' . escapeshellarg($file) . ' psql -X -w -h 127.0.0.1 -p ' . $port . ' -U ' . escapeshellarg($role) . ' -d ' . escapeshellarg($created ? $db : 'postgres') . ' -tAc ' . escapeshellarg('SELECT 1'), false, 30);
         } finally {
             $ssh->exec('rm -f ' . escapeshellarg($file), false, 15);
         }
         if (!$ok->ok() || trim($ok->output) !== '1') {
-            throw new DeployException("Role $role exists and the key vault's password does not log in as it: it is not ours, or its password differs. Not changing it.", 'postgres');
+            throw new DeployException($created
+                ? "Role $role and database $db are in place, but logging in with the vault's password over 127.0.0.1 fails (pg_hba.conf?): " . trim($ok->text())
+                : "Role $role exists and the key vault's password does not log in as it: it is not ours, or its password differs. Not changing it.", 'postgres');
         }
     }
 
@@ -193,6 +200,22 @@ class ServerProvisioner
         $sum = fn(string $path) => trim((string) strtok($ssh->exec('sha256sum ' . escapeshellarg($path), false, 15)->output, ' '));
         if ($sum($box) !== $sum($ours)) {
             throw new DeployException("$box differs from the one this release's Fluffy writes: every Fluffy site on the box would get the new headers. Align them first.", 'edge');
+        }
+    }
+
+    /** Our vhost must not become a fallback: checked again with the RELEASE's template, after the build. */
+    public function assertFallbacks(SshService $ssh, string $release, string $domain): void
+    {
+        $binary = $ssh->test('test -x ' . self::OPENRESTY) ? self::OPENRESTY : 'nginx';
+        $template = $ssh->exec('cat ' . escapeshellarg($release . '/vendor/fluffy-space/fluffy/bin/setup/nginx.conf'), false, 15);
+        $dump = ServerInspector::loadedConfig($ssh, $binary);
+        if (!$template->ok() || !$dump->ok()) {
+            throw new DeployException("Could not read the release's vhost template or the loaded config to check the fallback servers.", 'edge');
+        }
+        foreach (ServerInspector::fallbacks($dump->output, "/etc/nginx/sites-enabled/$domain", ServerInspector::listensIn($template->output)) as $socket => [$safe, $detail]) {
+            if (!$safe) {
+                throw new DeployException("On $socket: $detail.", 'edge');
+            }
         }
     }
 

@@ -329,6 +329,10 @@ class DeploymentService
                     throw new DeployException("Another Set up of {$app->Name} is running on this box ($lock exists; remove it if none is).", 'preflight');
                 }
                 $locked = $lock;
+                // Again under the lock: a run that finished while this one was checking set it up.
+                if ($ssh->test('test -f ' . escapeshellarg($base . '/live-color'))) {
+                    throw new DeployException('The application was set up on this box meanwhile (it has a live colour): use Deploy.', 'preflight');
+                }
 
                 $this->log('== step 2/8: workspace');
                 $login = (string) $server->UserName;
@@ -350,6 +354,7 @@ class DeploymentService
                 $this->build($app, $source, $ssh, $staging);
                 $this->swap($ssh, $staging, $release);
                 $this->provisioner->assertSnippet($ssh, $release);
+                $this->provisioner->assertFallbacks($ssh, $release, $domain);
                 $this->provisioner->redis($ssh, $release, (string) $app->Name);
                 $this->migrate($ssh, $release);
 
